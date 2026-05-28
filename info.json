@@ -6,7 +6,7 @@
   "factorio_version": "2.0",
   "dependencies": [
     "base >= 2.0.0",
-    "? multi-team-support",
+    "? multi-team-support >= 0.4.43",
     "? space-age",
     "? quality"
   ],
