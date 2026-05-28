@@ -1,6 +1,6 @@
 ---------------------------------------------------------------------------------------------------
 Version: 0.1.4
-Date: 2026-05-28
+Date: 28. 05. 2026
   Features:
     - Under Multi-Team Support, the map intro now shows as a tab on MTS's unified
       welcome screen, and the Expanse player settings (SpectatorMode, button position)
