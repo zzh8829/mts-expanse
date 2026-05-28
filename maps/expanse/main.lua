@@ -172,6 +172,35 @@ local function is_team_force_name(force_name)
     return type(force_name) == 'string' and force_name:match('^team%-%d+$') ~= nil
 end
 
+-- Strip the per-team prefix/suffix from a surface name to get the shared base planet:
+--   "team-3-nauvis" -> "nauvis", "mts-vulcanus-2" -> "vulcanus".
+-- Returns nil for anything we can't confidently reduce to a planet shared by all teams,
+-- so the RNG is NEVER keyed on a team-specific surface name (e.g. "team-1-nauvis"),
+-- which would make two teams diverge.
+local function base_planet_name(surface_name)
+    if type(surface_name) ~= 'string' then
+        return nil
+    end
+    return surface_name:match('^team%-%d+%-(.+)$')
+        or surface_name:match('^mts%-(.+)%-%d+$')
+end
+
+-- Deterministic integer hash of a planet name, mixed into the per-cell RNG so rolls are
+-- keyed by planet rather than by the global RNG sequence: every team that shares a planet
+-- rolls identical content, and different planets diverge. When the planet can't be derived
+-- the key is 0, so rolls fall back to seed+position only -- still identical across teams.
+local function planet_rng_key(surface_name)
+    local name = base_planet_name(surface_name)
+    if not name then
+        return 0
+    end
+    local h = 0
+    for i = 1, #name do
+        h = (h * 31 + name:byte(i)) % 2147483647
+    end
+    return h
+end
+
 local function promote_mts_team_host_info(info)
     if not (is_mts_active() and type(info) == 'table' and info.is_occupied) then
         return false
@@ -343,6 +372,7 @@ local function init_state_defaults(state, force_name)
     state.force_name = force_name or state.force_name or DEFAULT_FORCE_NAME
     state.events = expanse.events
     state.surface_name = state.surface_name or state_surface_name(state.force_name)
+    state.planet_key = planet_rng_key(state.surface_name)
     local desired_source_surface = state_source_surface_name(state.force_name)
     if is_mts_active() then
         state.source_surface = desired_source_surface
