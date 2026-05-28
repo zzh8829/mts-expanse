@@ -281,7 +281,10 @@ local function build_config_gui(data)
         end
     end
 
-    if admin then
+    -- Admin Settings render only in standalone games: under MTS the team-tab path
+    -- passes player_only, and the Comfy menu (fish) button that opens this Config frame
+    -- is suppressed, so MTS players never reach this section.
+    if admin and not data.player_only then
         label = scroll_pane.add({ type = 'label', caption = 'Admin Settings' })
         label.style.font = 'default-bold'
         label.style.padding = 0
@@ -428,4 +431,16 @@ end
 Public.add_switch = add_switch
 Public.get_actor = get_actor
 Public.register_token = Task.register
+
+--- Render only the Player Settings (player_only skips the Admin section) into `frame`.
+--- Used to host the Expanse player settings inside MTS's Team Settings tab. The switches
+--- keep their canonical names, so the existing on_gui_switch_state_changed handler drives
+--- them.
+function Public.build_player_config(player, frame)
+    if not (player and player.valid and frame and frame.valid) then
+        return
+    end
+    build_config_gui({ player = player, frame = frame, player_only = true })
+end
+
 return Public

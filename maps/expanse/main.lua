@@ -16,6 +16,7 @@ local MissionData = require 'maps.expanse.mission_data'
 local GetNoise = require 'utils.math.get_noise'
 local Global = require 'utils.global'
 local Map_info = require 'modules.map_info'
+local Config = require 'utils.gui.config'
 local Gui = require 'utils.gui'
 local format_number = require 'util'.format_number
 local Autostash = require 'modules.autostash'
@@ -434,8 +435,19 @@ state_from_surface = function(surface)
     if state_matches_surface(expanse, surface) then
         return expanse
     end
+    -- Ask MTS who owns this surface (authoritative), cached in surface_to_force so it
+    -- is at most one remote.call per surface. Also catches names the regex below misses
+    -- (e.g. reset-generation surfaces). Falls back to name matching when MTS is absent.
+    if is_mts_active() then
+        local ok, owner = pcall(remote.call, MTS_INTERFACE, 'get_surface_owner', surface.name)
+        if ok and is_team_force_name(owner) then
+            expanse.surface_to_force[surface.name] = owner
+            return ensure_team_state(owner)
+        end
+    end
     local force_name = surface.name:match('^(team%-%d+)%-expanse') or surface.name:match('^(team%-%d+)%-nauvis$') or surface.name:match('^(team%-%d+)%-NonOrbit$')
     if force_name then
+        expanse.surface_to_force[surface.name] = force_name
         return ensure_team_state(force_name)
     end
     for _, state in pairs(expanse.team_states or {}) do
@@ -1484,7 +1496,7 @@ end
 -- on_configuration_changed. Multiplayer-safe: no remote.call in on_load, and every peer
 -- registers the same handlers for the same ids right after load. Degrades cleanly on an
 -- older MTS that lacks an event (pcall + nil id -> that handler simply isn't registered).
-local WELCOME_TAB_NAME = 'mts-expanse'
+local EXPANSE_TAB_NAME = 'mts-expanse'
 
 local function draw_welcome_tab(element)
     if not (element and element.valid) then
@@ -1525,7 +1537,7 @@ local function draw_welcome_tab(element)
 end
 
 local function on_mts_welcome_tab_built(event)
-    if event.tab_name ~= WELCOME_TAB_NAME then
+    if event.tab_name ~= EXPANSE_TAB_NAME then
         return
     end
     draw_welcome_tab(event.element)
@@ -1552,15 +1564,39 @@ local function on_mts_player_joined_team(event)
     schedule_mts_nauvis_cleanup(state, 180)
 end
 
+-- Fill the Expanse tab in MTS's Team Settings panel with the Expanse player settings
+-- (SpectatorMode, bottom-button position, ...). Player settings only -- no Admin
+-- section and no blueprint toggle (MTS already owns blueprints). The requester-chest
+-- top button still shows the live stats/status as before.
+local function on_mts_team_tab_built(event)
+    if event.tab_name ~= EXPANSE_TAB_NAME then
+        return
+    end
+    local element = event.element
+    if not (element and element.valid) then
+        return
+    end
+    local player = game.get_player(event.player_index)
+    if not (player and player.valid) then
+        return
+    end
+    Config.build_player_config(player, element)
+end
+
 -- mts-v1 event name -> handler. Keys are the exact names passed to get_event_id.
 local MTS_EVENT_HANDLERS = {
     on_welcome_tab_built  = on_mts_welcome_tab_built,
     on_player_joined_team = on_mts_player_joined_team,
+    on_team_tab_built     = on_mts_team_tab_built,
 }
 
 -- on_init / on_load / on_configuration_changed. Reads cached ids from storage and
 -- (re-)registers every handler -- no remote.call, so it is safe in on_load.
 local function register_mts_event_handlers()
+    -- Under MTS the Expanse settings/intro live in MTS's panels (welcome + team tab),
+    -- so suppress the Comfy top "menu" (raw-fish) button. Set every session (incl.
+    -- on_load) before any player is created; in standalone the fish button stays.
+    Gui.top_button_enabled = not is_mts_active()
     local ids = storage.expanse_mts_event_ids
     if not ids then
         return
@@ -1581,7 +1617,9 @@ local function setup_mts_events()
     -- The intro now lives in the MTS welcome tab, so suppress the standalone popup.
     Map_info.call_map_info_on_join(false)
     pcall(remote.call, MTS_INTERFACE, 'register_welcome_tab',
-        { name = WELCOME_TAB_NAME, caption = 'Expanse', order = 'a' })
+        { name = EXPANSE_TAB_NAME, caption = 'Expanse', order = 'a' })
+    pcall(remote.call, MTS_INTERFACE, 'register_team_tab',
+        { name = EXPANSE_TAB_NAME, caption = 'Expanse', order = 'm' })
     local ids = {}
     for name in pairs(MTS_EVENT_HANDLERS) do
         local ok, id = pcall(remote.call, MTS_INTERFACE, 'get_event_id', name)

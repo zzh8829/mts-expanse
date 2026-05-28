@@ -103,6 +103,11 @@ Public.x_icon = 'file/utils/files/x.png'
 Public.info_icon = 'file/utils/files/info.png'
 Public.mod_gui_button_enabled = false
 
+--- When false, the Comfy top "menu" button (the raw-fish icon that opens the tabbed
+--- Config / Map Info frame) is not created. MTS Expanse sets this false under MTS, where
+--- those tabs live in MTS's own panels (welcome screen + team-settings tab) instead.
+Public.top_button_enabled = true
+
 function Public.sprite_style(size, padding, style)
     style = style or {}
     style.padding = padding or -2
@@ -971,6 +976,9 @@ local function resize_top_buttons(player)
 end
 
 local function top_button(player)
+    if not Public.top_button_enabled then
+        return
+    end
     if settings.mod_gui_top_frame then
         local button = Public.add_mod_button(player, { type = 'sprite-button', name = main_button_name, sprite = 'item/raw-fish', style = Public.button_style })
         if button then
