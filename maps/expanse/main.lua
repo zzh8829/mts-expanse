@@ -1571,6 +1571,85 @@ local function on_pre_player_left_game(event)
     end
 end
 
+-- ── MTS welcome-screen tab ───────────────────────────────────────────
+-- Under MTS, the Expanse map intro lives in a tab on MTS's unified welcome screen
+-- instead of the standalone Comfy "Map Info" popup. The on_welcome_tab_built event
+-- id is dynamic (script.generate_event_name in MTS), so we fetch it via remote.call
+-- where that's legal (on_init / on_configuration_changed), cache it in storage, and
+-- (re-)register the handler from on_init / on_load / on_configuration_changed. That is
+-- the multiplayer-safe pattern: no remote.call in on_load, and every peer registers the
+-- same handler for the same id right after load. Degrades cleanly on an older MTS that
+-- lacks the interface (pcall + nil id -> no tab, no error).
+local WELCOME_TAB_NAME = 'mts-expanse'
+
+local function draw_welcome_tab(element)
+    if not (element and element.valid) then
+        return
+    end
+    element.clear()
+    local info = Map_info.get_map_information()
+    local lc = info.localised_category
+    local caption = info.main_caption or (lc and { lc .. '.map_info_main_caption' })
+    local sub_caption = info.sub_caption or (lc and { lc .. '.map_info_sub_caption' })
+    local text = info.text or (lc and { lc .. '.map_info_text' })
+    if not (caption and text) then
+        return
+    end
+
+    local scroll = element.add { type = 'scroll-pane', vertical_scroll_policy = 'auto-and-reserve-space', horizontal_scroll_policy = 'never' }
+    scroll.style.vertically_stretchable = true
+    scroll.style.horizontally_stretchable = true
+    scroll.style.padding = 8
+
+    local title = scroll.add { type = 'label', caption = caption }
+    title.style.font = 'heading-1'
+    title.style.font_color = info.main_caption_color or { r = 1, g = 0.82, b = 0.4 }
+    title.style.single_line = false
+
+    if sub_caption then
+        local sub = scroll.add { type = 'label', caption = sub_caption }
+        sub.style.font = 'heading-2'
+        sub.style.font_color = info.sub_caption_color or { r = 0.6, g = 0.8, b = 1 }
+        sub.style.single_line = false
+        sub.style.bottom_margin = 6
+    end
+
+    local body = scroll.add { type = 'label', caption = text }
+    body.style.single_line = false
+    body.style.horizontally_stretchable = true
+    body.style.font_color = { r = 0.9, g = 0.9, b = 0.9 }
+end
+
+local function on_mts_welcome_tab_built(event)
+    if event.tab_name ~= WELCOME_TAB_NAME then
+        return
+    end
+    draw_welcome_tab(event.element)
+end
+
+local function register_welcome_handler()
+    local id = storage.expanse_mts_welcome_event_id
+    if id then
+        script.on_event(id, on_mts_welcome_tab_built)
+    end
+end
+
+-- Call only from on_init / on_configuration_changed (remote.call is legal there).
+local function setup_mts_welcome()
+    if not is_mts_active() then
+        return
+    end
+    -- The intro now lives in the MTS welcome tab, so suppress the standalone popup.
+    Map_info.call_map_info_on_join(false)
+    pcall(remote.call, MTS_INTERFACE, 'register_welcome_tab',
+        { name = WELCOME_TAB_NAME, caption = 'Expanse', order = 'a' })
+    local ok, id = pcall(remote.call, MTS_INTERFACE, 'get_event_id', 'on_welcome_tab_built')
+    if ok and type(id) == 'number' then
+        storage.expanse_mts_welcome_event_id = id
+    end
+    register_welcome_handler()
+end
+
 local function on_init()
     ensure_indexes()
     init_state_defaults(expanse, DEFAULT_FORCE_NAME)
@@ -1586,6 +1665,7 @@ local function on_init()
     else
         reset(expanse)
     end
+    setup_mts_welcome()
 end
 
 local function map_reset(event)
@@ -1619,6 +1699,7 @@ local function on_configuration_changed(_event)
         script.raise_event(expanse.events.mission_gui_update, {})
     end
     promote_all_mts_team_hosts()
+    setup_mts_welcome()
 end
 
 local function on_runtime_mod_setting_changed(event)
@@ -3503,6 +3584,7 @@ commands.add_command(
 
 Event.on_init(on_init)
 Event.on_configuration_changed(on_configuration_changed)
+Event.on_load(register_welcome_handler)
 Event.on_nth_tick(60, on_tick)
 Event.add(defines.events.on_chunk_generated, on_chunk_generated)
 Event.add(defines.events.on_area_cloned, on_area_cloned)
