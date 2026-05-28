@@ -5,7 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 FACTORIO="${FACTORIO:-$HOME/Library/Application Support/Steam/steamapps/common/Factorio/factorio.app/Contents/MacOS/factorio}"
-MTS_MOD_DIR="${MTS_MOD_DIR:-/tmp/multi-team-support}"
+MTS_MOD_DIR="${MTS_MOD_DIR:-}"
+MTS_MOD_ZIP="${MTS_MOD_ZIP:-}"
 WORK_DIR="${WORK_DIR:-/tmp/mts-expanse-two-client-quality-smoke}"
 PORT="${PORT:-34217}"
 CLIENT_A_NAME="${CLIENT_A_NAME:-MTSClientA}"
@@ -17,7 +18,7 @@ STEAM_PLAYER_DATA_BACKUP="${STEAM_PLAYER_DATA_BACKUP:-$WORK_DIR/steam-player-dat
 
 MOD_NAME="$(python3 -c 'import json; print(json.load(open("info.json"))["name"])')"
 VERSION="$(python3 -c 'import json; print(json.load(open("info.json"))["version"])')"
-MTS_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$MTS_MOD_DIR/info.json")"
+MTS_VERSION=""
 PACKAGE_NAME="${MOD_NAME}_${VERSION}"
 PROBE="mts-expanse-two-client-probe_0.1.0"
 ACTIVE_MTS_MOD_DIR="$MTS_MOD_DIR"
@@ -93,11 +94,23 @@ if [[ ! -x "$FACTORIO" ]]; then
     exit 1
 fi
 
-if [[ ! -f "$MTS_MOD_DIR/info.json" ]]; then
-    echo "multi-team-support source not found at: $MTS_MOD_DIR" >&2
-    echo "Set MTS_MOD_DIR to an unpacked multi-team-support mod checkout." >&2
+if [[ -n "$MTS_MOD_ZIP" ]]; then
+    echo "scripts/test-two-player-quality.sh patches an unpacked local MTS checkout for auto-claim." >&2
+    echo "Use scripts/launch-play.sh for official zipped MTS player testing." >&2
     exit 1
 fi
+
+if [[ -z "$MTS_MOD_DIR" ]]; then
+    echo "Set MTS_MOD_DIR to an unpacked multi-team-support checkout for patched local smoke testing." >&2
+    exit 1
+fi
+
+if [[ ! -f "$MTS_MOD_DIR/info.json" ]]; then
+    echo "multi-team-support source not found at: $MTS_MOD_DIR" >&2
+    echo "Set MTS_MOD_DIR to an unpacked multi-team-support checkout for patched local smoke testing." >&2
+    exit 1
+fi
+MTS_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$MTS_MOD_DIR/info.json")"
 
 if [[ -z "$STEAM_PLAYER_DATA" ]]; then
     STEAM_PLAYER_DATA="$(detect_steam_player_data || true)"
@@ -352,7 +365,9 @@ prepare_mts_mod() {
     fi
 
     ACTIVE_MTS_MOD_DIR="$WORK_DIR/multi-team-support-autoclaim"
-    cp -R "$MTS_MOD_DIR" "$ACTIVE_MTS_MOD_DIR"
+    rm -rf "$ACTIVE_MTS_MOD_DIR"
+    mkdir -p "$ACTIVE_MTS_MOD_DIR"
+    cp -R "$MTS_MOD_DIR"/. "$ACTIVE_MTS_MOD_DIR"/
     LC_ALL=C LC_CTYPE=C LANG=C perl -0pi -e 's/landing_pen_enabled\s*=\s*true/landing_pen_enabled              = false/' \
         "$ACTIVE_MTS_MOD_DIR/scripts/admin_flags.lua"
 }

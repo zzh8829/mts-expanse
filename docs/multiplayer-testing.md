@@ -26,7 +26,18 @@ Run the automated checks first:
 
 ```bash
 scripts/test.sh
-MTS_MOD_DIR=/tmp/multi-team-support scripts/test-mts.sh
+scripts/test-mts.sh
+```
+
+`scripts/test-mts.sh` uses the latest official installed
+`multi-team-support_*.zip` by default. Set `MTS_MOD_ZIP` only when testing a
+specific official zip.
+
+The automated two-client Quality smoke is a patched local-MTS developer test
+because it bypasses the Landing Pen menu:
+
+```bash
+MTS_MOD_DIR=/path/to/multi-team-support scripts/test-two-player-quality.sh
 ```
 
 Confirm no old Factorio smoke processes are still running. Do not use a broad
@@ -228,7 +239,7 @@ auto-claim separate teams. It sets `AUTO_CLAIM=true` by default, which also
 enables the final server-side player probe by default:
 
 ```bash
-MTS_MOD_DIR=/tmp/multi-team-support MOD_SETUP=vanilla scripts/launch-play-patched-mts.sh
+MTS_MOD_DIR=/path/to/multi-team-support MOD_SETUP=vanilla scripts/launch-play-patched-mts.sh
 ```
 
 Once Expanse has moved a team onto `team-N-expanse`, the mod removes the unused

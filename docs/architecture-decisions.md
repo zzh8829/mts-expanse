@@ -134,18 +134,19 @@ The repeatable verification suite is:
 
 ```bash
 scripts/test.sh
-MTS_MOD_DIR=/tmp/multi-team-support scripts/test-mts.sh
-MTS_MOD_DIR=/tmp/multi-team-support scripts/test-two-player-quality.sh
+scripts/test-mts.sh
+MTS_MOD_DIR=/path/to/multi-team-support scripts/test-two-player-quality.sh
 ```
 
 `scripts/test.sh` covers Lua syntax, base-only create/benchmark, Space
 Age/Quality create/benchmark, remote API probes, and packaged zip loading.
 
 `scripts/test-mts.sh` covers MTS ownership, shared meta-map behavior, per-team
-state separation, rocket delivery probes, and natural-enemy stripping.
+state separation, rocket delivery probes, and natural-enemy stripping against
+the latest official installed MTS zip by default.
 
-`scripts/test-two-player-quality.sh` is the local graphical multiplayer smoke
-test for two real clients.
+`scripts/test-two-player-quality.sh` is the patched local-MTS graphical
+multiplayer smoke test for two real clients.
 
 The local play launcher is:
 
@@ -159,7 +160,7 @@ launcher only when an automated smoke run should bypass the join/create team
 menu:
 
 ```bash
-MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play-patched-mts.sh
+MTS_MOD_DIR=/path/to/multi-team-support scripts/launch-play-patched-mts.sh
 ```
 
 See `docs/multiplayer-testing.md` for the full multiplayer procedure.

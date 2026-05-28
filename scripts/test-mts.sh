@@ -5,19 +5,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 FACTORIO="${FACTORIO:-$HOME/Library/Application Support/Steam/steamapps/common/Factorio/factorio.app/Contents/MacOS/factorio}"
-MTS_MOD_DIR="${MTS_MOD_DIR:-/tmp/multi-team-support}"
+FACTORIO_MODS_DIR="${FACTORIO_MODS_DIR:-$HOME/Library/Application Support/factorio/mods}"
+MTS_MOD_ZIP="${MTS_MOD_ZIP:-}"
+MTS_MOD_DIR="${MTS_MOD_DIR:-}"
+MTS_DEV_MODE="${MTS_DEV_MODE:-false}"
 WORK_DIR="${WORK_DIR:-/tmp/mts-expanse-mts-test}"
-
-if [[ ! -f "$MTS_MOD_DIR/info.json" ]]; then
-    echo "multi-team-support source not found at: $MTS_MOD_DIR" >&2
-    echo "Set MTS_MOD_DIR to an unpacked multi-team-support mod checkout." >&2
-    exit 1
-fi
 
 MOD_NAME="$(python3 -c 'import json; print(json.load(open("info.json"))["name"])')"
 VERSION="$(python3 -c 'import json; print(json.load(open("info.json"))["version"])')"
-MTS_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$MTS_MOD_DIR/info.json")"
+MTS_VERSION=""
 PACKAGE_NAME="${MOD_NAME}_${VERSION}"
+ACTIVE_MTS_MOD_SOURCE=""
+ACTIVE_MTS_MOD_LINK_NAME=""
+MTS_SOURCE_LABEL=""
 
 FACTORIO_CONTENTS="$(cd "$(dirname "$FACTORIO")/.." && pwd)"
 READ_DATA="${READ_DATA:-$FACTORIO_CONTENTS/data}"
@@ -28,6 +28,90 @@ PROBE="mts-expanse-mts-probe_0.1.0"
 
 log() {
     printf '\n==> %s\n' "$*"
+}
+
+latest_installed_mts_zip() {
+    [[ -d "$FACTORIO_MODS_DIR" ]] || return 1
+    python3 - "$FACTORIO_MODS_DIR" <<'PY'
+import glob
+import os
+import re
+import sys
+
+paths = glob.glob(os.path.join(sys.argv[1], "multi-team-support_*.zip"))
+if not paths:
+    raise SystemExit(1)
+
+def version_key(path):
+    match = re.match(r"^multi-team-support_(.+)\.zip$", os.path.basename(path))
+    if not match:
+        return ()
+    parts = re.split(r"([0-9]+)", match.group(1))
+    return tuple(int(part) if part.isdigit() else part for part in parts)
+
+print(max(paths, key=version_key))
+PY
+}
+
+mts_version_from_zip_name() {
+    local base
+    base="$(basename "$1")"
+    if [[ "$base" =~ ^multi-team-support_([^/]+)\.zip$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    return 1
+}
+
+mts_version_from_dir() {
+    python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$1/info.json"
+}
+
+resolve_mts_mod() {
+    local source=""
+    if [[ "$MTS_DEV_MODE" == "true" ]]; then
+        source="${MTS_MOD_DIR:-$MTS_MOD_ZIP}"
+    else
+        source="$MTS_MOD_ZIP"
+        if [[ -z "$source" && -n "$MTS_MOD_DIR" && "$MTS_MOD_DIR" == *.zip ]]; then
+            source="$MTS_MOD_DIR"
+        fi
+    fi
+    if [[ -z "$source" ]]; then
+        source="$(latest_installed_mts_zip || true)"
+    fi
+
+    if [[ -z "$source" ]]; then
+        echo "Could not find Multi-Team Support. Install the official zip in $FACTORIO_MODS_DIR or set MTS_MOD_ZIP." >&2
+        exit 1
+    fi
+
+    if [[ -f "$source" && "$source" == *.zip ]]; then
+        if ! MTS_VERSION="$(mts_version_from_zip_name "$source")"; then
+            echo "MTS zip must be named multi-team-support_<version>.zip: $source" >&2
+            exit 1
+        fi
+        ACTIVE_MTS_MOD_SOURCE="$source"
+        ACTIVE_MTS_MOD_LINK_NAME="multi-team-support_$MTS_VERSION.zip"
+        MTS_SOURCE_LABEL="$source"
+    elif [[ -d "$source" ]]; then
+        if [[ "$MTS_DEV_MODE" != "true" ]]; then
+            echo "Unpacked Multi-Team Support dirs are only for explicit dev testing." >&2
+            echo "Use the official installed zip with scripts/test-mts.sh, or set MTS_DEV_MODE=true." >&2
+            exit 1
+        fi
+        if [[ ! -f "$source/info.json" ]]; then
+            echo "multi-team-support source not found at: $source" >&2
+            exit 1
+        fi
+        MTS_VERSION="$(mts_version_from_dir "$source")"
+        ACTIVE_MTS_MOD_SOURCE="$source"
+        ACTIVE_MTS_MOD_LINK_NAME="multi-team-support_$MTS_VERSION"
+        MTS_SOURCE_LABEL="$source"
+    else
+        echo "Multi-Team Support source must be an official zip for scripts/test-mts.sh: $source" >&2
+        exit 1
+    fi
 }
 
 write_config() {
@@ -597,12 +681,16 @@ run_factorio() {
     "$FACTORIO" --config "$CONFIG" --mod-directory "$MODS" "${@:1}"
 }
 
+resolve_mts_mod
+
 rm -rf "$WORK_DIR"
 mkdir -p "$MODS"
 write_config
 ln -s "$ROOT" "$MODS/$PACKAGE_NAME"
-ln -s "$MTS_MOD_DIR" "$MODS/multi-team-support_$MTS_VERSION"
+ln -s "$ACTIVE_MTS_MOD_SOURCE" "$MODS/$ACTIVE_MTS_MOD_LINK_NAME"
 write_probe_mod
+
+log "Using Multi-Team Support $MTS_VERSION from $MTS_SOURCE_LABEL"
 
 log "Creating and probing base-only MTS save"
 write_mod_list base

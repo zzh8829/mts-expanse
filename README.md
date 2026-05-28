@@ -55,11 +55,15 @@ MTS teams do not get forced onto a shared orbit platform. Without Space Age,
 Expanse does not spawn mission rocket silos or support surfaces; players use the
 normal rocket silo path to launch rockets and produce space science.
 
-Run the compatibility probe with an unpacked MTS checkout:
+Run the compatibility probe against the latest official installed MTS zip:
 
 ```bash
-MTS_MOD_DIR=/tmp/multi-team-support scripts/test-mts.sh
+scripts/test-mts.sh
 ```
+
+Set `MTS_MOD_ZIP=/path/to/multi-team-support_<version>.zip` to test a specific
+official MTS zip. For explicit local MTS development only, use
+`MTS_DEV_MODE=true MTS_MOD_DIR=/path/to/multi-team-support scripts/test-mts.sh`.
 
 Run the full local suite with:
 
@@ -135,7 +139,7 @@ For a patched local-MTS smoke run that bypasses the Landing Pen menu, use the
 separate developer launcher with an unpacked MTS checkout:
 
 ```bash
-MTS_MOD_DIR=/tmp/multi-team-support MOD_SETUP=vanilla scripts/launch-play-patched-mts.sh
+MTS_MOD_DIR=/path/to/multi-team-support MOD_SETUP=vanilla scripts/launch-play-patched-mts.sh
 ```
 
 `scripts/launch-play-patched-mts.sh` sets `AUTO_CLAIM=true` by default and
