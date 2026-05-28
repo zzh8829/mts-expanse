@@ -488,6 +488,13 @@ local function state_players(state)
     return game.players
 end
 
+-- True when the team owning this state has someone online. Lets per-tick work that
+-- only matters to present players (the hungry-chest scan) skip idle/offline teams.
+local function state_has_connected_players(state)
+    local force = state_force(state)
+    return force and force.valid and #force.connected_players > 0
+end
+
 local function state_print(state, message, color)
     local force = state_force(state)
     if force and force.valid then
@@ -1793,7 +1800,12 @@ local function process_state_tick(state)
     if state.next_mts_nauvis_cleanup_tick and game.tick >= state.next_mts_nauvis_cleanup_tick then
         cleanup_mts_nauvis_surfaces(state)
     end
-    process_hungry_chests(state)
+    -- Skip the hungry-chest scan for teams with nobody online. A completion just gets
+    -- detected on the next tick after someone reconnects (the fed items are still in the
+    -- chest), so no progress is lost -- offline teams simply don't cost per-tick work.
+    if state_has_connected_players(state) then
+        process_hungry_chests(state)
+    end
     if SpaceMissions.enabled() then
         SpaceMissions.ensure_support(state)
         SpaceMissions.launch_rockets(state)
