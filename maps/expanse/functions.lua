@@ -38,10 +38,11 @@ local function cell_random_int(expanse, left_top, salt, max)
     end
 
     local seed = math.floor((expanse and expanse.shared_seed) or 1) % 2147483647
+    local p = math.floor((expanse and expanse.planet_key) or 0) % 1000039
     local x = math.floor((left_top and left_top.x) or 0) % 1000003
     local y = math.floor((left_top and left_top.y) or 0) % 1000033
     local s = math.floor(salt or 0) % 1000037
-    local n = (seed + x * 73856093 + y * 19349663 + s * 83492791) % 2147483647
+    local n = (seed + p * 70368767 + x * 73856093 + y * 19349663 + s * 83492791) % 2147483647
     n = (n * 48271 + 1) % 2147483647
     return (n % max) + 1
 end
@@ -76,7 +77,8 @@ local delay_infini_tree_token =
             local surface = event.surface
             local position = event.position
 
-            local newtree = surface.create_entity({ name = 'tree-0' .. math.random(1, 9), position = position })
+            local species = cell_random_int(event.expanse, position, 9100, 9)
+            local newtree = surface.create_entity({ name = 'tree-0' .. species, position = position })
             event.expanse.tree = script.register_on_object_destroyed(newtree)
         end
     )

@@ -1,12 +1,12 @@
 {
   "name": "mts-expanse",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "title": "MTS Expanse",
   "author": "ComfyFactorio contributors; MTS Expanse ported by zz for Multi-Team Support",
   "factorio_version": "2.0",
   "dependencies": [
     "base >= 2.0.0",
-    "? multi-team-support",
+    "? multi-team-support >= 0.4.43",
     "? space-age",
     "? quality"
   ],

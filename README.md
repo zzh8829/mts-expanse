@@ -35,9 +35,6 @@ For fair competitive starts, the mod can synchronize cell content between teams:
 the same coordinates produce the same terrain rolls, hungry chest requests, and
 invasion candidates. Each team still has its own surface and its own progress.
 
-MTS team hosts are promoted to Factorio admin so they can use team-local
-Expanse admin tools without a separate server admin-list step.
-
 ## Solo And Co-op
 
 You can also play without Multi-Team Support. In a regular single-team game,

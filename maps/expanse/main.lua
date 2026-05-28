@@ -16,6 +16,7 @@ local MissionData = require 'maps.expanse.mission_data'
 local GetNoise = require 'utils.math.get_noise'
 local Global = require 'utils.global'
 local Map_info = require 'modules.map_info'
+local Config = require 'utils.gui.config'
 local Gui = require 'utils.gui'
 local format_number = require 'util'.format_number
 local Autostash = require 'modules.autostash'
@@ -172,73 +173,33 @@ local function is_team_force_name(force_name)
     return type(force_name) == 'string' and force_name:match('^team%-%d+$') ~= nil
 end
 
-local function promote_mts_team_host_info(info)
-    if not (is_mts_active() and type(info) == 'table' and info.is_occupied) then
-        return false
+-- Strip the per-team prefix/suffix from a surface name to get the shared base planet:
+--   "team-3-nauvis" -> "nauvis", "mts-vulcanus-2" -> "vulcanus".
+-- Returns nil for anything we can't confidently reduce to a planet shared by all teams,
+-- so the RNG is NEVER keyed on a team-specific surface name (e.g. "team-1-nauvis"),
+-- which would make two teams diverge.
+local function base_planet_name(surface_name)
+    if type(surface_name) ~= 'string' then
+        return nil
     end
-    if not is_team_force_name(info.force_name) then
-        return false
-    end
-    local player_index = info.leader_player_index
-    if type(player_index) ~= 'number' then
-        return false
-    end
-    local player = game.get_player(player_index)
-    if not (player and player.valid) then
-        return false
-    end
-    local changed = false
-    local team_force = game.forces[info.force_name]
-    if team_force and team_force.valid and player.force.name ~= info.force_name then
-        local force_ok, force_err = pcall(function()
-            player.force = team_force
-        end)
-        if force_ok then
-            changed = true
-            log('[mts-expanse] restored MTS team host force: ' .. player.name .. ' (' .. info.force_name .. ')')
-        else
-            log('[mts-expanse] failed to restore MTS team host force for ' .. player.name .. ': ' .. tostring(force_err))
-        end
-    end
-    if not player.admin then
-        local ok, err = pcall(function()
-            player.admin = true
-        end)
-        if not ok then
-            log('[mts-expanse] failed to promote MTS team host ' .. player.name .. ' to admin: ' .. tostring(err))
-            return changed
-        end
-        changed = true
-        if player.connected then
-            player.print('You are now an admin because you host an MTS team.')
-        end
-        log('[mts-expanse] promoted MTS team host to admin: ' .. player.name .. ' (' .. info.force_name .. ')')
-    end
-    return changed
+    return surface_name:match('^team%-%d+%-(.+)$')
+        or surface_name:match('^mts%-(.+)%-%d+$')
 end
 
-local function promote_mts_team_host(force_name)
-    if not (is_mts_active() and is_team_force_name(force_name)) then
-        return false
+-- Deterministic integer hash of a planet name, mixed into the per-cell RNG so rolls are
+-- keyed by planet rather than by the global RNG sequence: every team that shares a planet
+-- rolls identical content, and different planets diverge. When the planet can't be derived
+-- the key is 0, so rolls fall back to seed+position only -- still identical across teams.
+local function planet_rng_key(surface_name)
+    local name = base_planet_name(surface_name)
+    if not name then
+        return 0
     end
-    local ok, info = pcall(remote.call, MTS_INTERFACE, 'get_team_info', force_name)
-    if not ok then
-        return false
+    local h = 0
+    for i = 1, #name do
+        h = (h * 31 + name:byte(i)) % 2147483647
     end
-    return promote_mts_team_host_info(info)
-end
-
-local function promote_all_mts_team_hosts()
-    if not is_mts_active() then
-        return
-    end
-    local ok, teams = pcall(remote.call, MTS_INTERFACE, 'get_team_list')
-    if not ok or type(teams) ~= 'table' then
-        return
-    end
-    for _, info in pairs(teams) do
-        promote_mts_team_host_info(info)
-    end
+    return h
 end
 
 local function find_character_position(surface, position)
@@ -299,14 +260,31 @@ end
 
 local function state_surface_name(force_name)
     if is_team_force_name(force_name) then
-        return force_name .. '-expanse'
+        -- Vanilla teams play directly on the surface MTS spawns them onto
+        -- (team-N-nauvis), so the player is never relocated to a second surface
+        -- and never sees a Nauvis frame on spawn. MTS's clone_mirror replicates
+        -- the canonical world (real nauvis) onto each team-N-nauvis, exactly as it
+        -- does for dangOreus. Space Age still uses a dedicated surface for now (its
+        -- MTS spawn surface is a planet variant owned by MTS's planet_map).
+        if SA then
+            return force_name .. '-expanse'
+        end
+        return force_name .. '-nauvis'
     end
     return DEFAULT_SURFACE_NAME
 end
 
 local function state_source_surface_name(force_name)
+    -- The canonical Expanse world is generated on the real "nauvis" surface -- the
+    -- same surface MTS's clone_mirror reads from. That makes Expanse a plain nauvis
+    -- decorator (like dangOreus): clone_mirror copies the *Expanse* world onto every
+    -- team-N-nauvis (identical for all teams, no vanilla/crash-site bleed) and the
+    -- mod behaves the same with or without MTS. Standalone already uses nauvis here.
     if is_mts_active() then
-        return SHARED_SOURCE_SURFACE
+        if SA then
+            return SHARED_SOURCE_SURFACE
+        end
+        return DEFAULT_SOURCE_SURFACE
     end
     if is_team_force_name(force_name) then
         return force_name .. '-expanse-source'
@@ -326,6 +304,7 @@ local function init_state_defaults(state, force_name)
     state.force_name = force_name or state.force_name or DEFAULT_FORCE_NAME
     state.events = expanse.events
     state.surface_name = state.surface_name or state_surface_name(state.force_name)
+    state.planet_key = planet_rng_key(state.surface_name)
     local desired_source_surface = state_source_surface_name(state.force_name)
     if is_mts_active() then
         state.source_surface = desired_source_surface
@@ -456,8 +435,19 @@ state_from_surface = function(surface)
     if state_matches_surface(expanse, surface) then
         return expanse
     end
-    local force_name = surface.name:match('^(team%-%d+)%-expanse') or surface.name:match('^(team%-%d+)%-NonOrbit$')
+    -- Ask MTS who owns this surface (authoritative), cached in surface_to_force so it
+    -- is at most one remote.call per surface. Also catches names the regex below misses
+    -- (e.g. reset-generation surfaces). Falls back to name matching when MTS is absent.
+    if is_mts_active() then
+        local ok, owner = pcall(remote.call, MTS_INTERFACE, 'get_surface_owner', surface.name)
+        if ok and is_team_force_name(owner) then
+            expanse.surface_to_force[surface.name] = owner
+            return ensure_team_state(owner)
+        end
+    end
+    local force_name = surface.name:match('^(team%-%d+)%-expanse') or surface.name:match('^(team%-%d+)%-nauvis$') or surface.name:match('^(team%-%d+)%-NonOrbit$')
     if force_name then
+        expanse.surface_to_force[surface.name] = force_name
         return ensure_team_state(force_name)
     end
     for _, state in pairs(expanse.team_states or {}) do
@@ -496,6 +486,13 @@ local function state_players(state)
         return force.players
     end
     return game.players
+end
+
+-- True when the team owning this state has someone online. Lets per-tick work that
+-- only matters to present players (the hungry-chest scan) skip idle/offline teams.
+local function state_has_connected_players(state)
+    local force = state_force(state)
+    return force and force.valid and #force.connected_players > 0
 end
 
 local function state_print(state, message, color)
@@ -1136,6 +1133,21 @@ local function on_chunk_generated(event)
         end
     end
     surface.set_tiles(tiles, true)
+    -- Under MTS, clone_mirror copies the full canonical Nauvis (= the Expanse source
+    -- world) onto this surface, including ore/trees/rocks for cells this team hasn't
+    -- opened yet. Strip that environment out of locked cells so the void stays empty
+    -- until a cell is unlocked. Only environmental entities are cleared -- never
+    -- containers/machines -- so the frontier hungry chests are never touched.
+    for _, entity in pairs(surface.find_entities_filtered({ area = event.area, type = { 'resource', 'tree', 'cliff', 'fish', 'simple-entity' } })) do
+        if entity.valid then
+            local ex = math.floor(entity.position.x)
+            local ey = math.floor(entity.position.y)
+            local in_initial_cell = ex >= 0 and ex < state.square_size and ey >= 0 and ey < state.square_size
+            if not in_initial_cell and not is_tile_in_open_cell(state, ex, ey) then
+                entity.destroy()
+            end
+        end
+    end
     destroy_natural_enemy_entities(surface, event.area, state)
 end
 
@@ -1443,9 +1455,6 @@ end
 
 local function on_player_joined_game(event)
     local player = game.players[event.player_index]
-    if player then
-        promote_mts_team_host(player.force.name)
-    end
     local state = state_from_player(player)
     if not state then
         create_button(player)
@@ -1463,23 +1472,6 @@ local function on_player_joined_game(event)
     end
 
     create_button(player)
-end
-
-local function on_player_changed_force(event)
-    if not is_mts_active() then
-        return
-    end
-    local player = game.get_player(event.player_index)
-    if not player or not player.valid or not is_team_force_name(player.force.name) then
-        return
-    end
-    local state = ensure_team_state(player.force.name)
-    expanse.pending_player_teleports[player.index] = {
-        force_name = state_key(state),
-        tick = game.tick + 5
-    }
-    schedule_mts_nauvis_cleanup(state, 180)
-    promote_mts_team_host(player.force.name)
 end
 
 local function on_pre_player_left_game(event)
@@ -1503,6 +1495,149 @@ local function on_pre_player_left_game(event)
     end
 end
 
+-- ── MTS event integration ────────────────────────────────────────────
+-- Expanse consumes several mts-v1 custom events (welcome tab, team join, team
+-- created). Their ids are dynamic (script.generate_event_name in MTS), so we fetch
+-- them via remote.call where that's legal (on_init / on_configuration_changed), cache
+-- them in storage, and (re-)register the handlers from on_init / on_load /
+-- on_configuration_changed. Multiplayer-safe: no remote.call in on_load, and every peer
+-- registers the same handlers for the same ids right after load. Degrades cleanly on an
+-- older MTS that lacks an event (pcall + nil id -> that handler simply isn't registered).
+local EXPANSE_TAB_NAME = 'mts-expanse'
+
+local function draw_welcome_tab(element)
+    if not (element and element.valid) then
+        return
+    end
+    element.clear()
+    local info = Map_info.get_map_information()
+    local lc = info.localised_category
+    local caption = info.main_caption or (lc and { lc .. '.map_info_main_caption' })
+    local sub_caption = info.sub_caption or (lc and { lc .. '.map_info_sub_caption' })
+    local text = info.text or (lc and { lc .. '.map_info_text' })
+    if not (caption and text) then
+        return
+    end
+
+    local scroll = element.add { type = 'scroll-pane', vertical_scroll_policy = 'auto-and-reserve-space', horizontal_scroll_policy = 'never' }
+    scroll.style.vertically_stretchable = true
+    scroll.style.horizontally_stretchable = true
+    scroll.style.padding = 8
+
+    local title = scroll.add { type = 'label', caption = caption }
+    title.style.font = 'heading-1'
+    title.style.font_color = info.main_caption_color or { r = 1, g = 0.82, b = 0.4 }
+    title.style.single_line = false
+
+    if sub_caption then
+        local sub = scroll.add { type = 'label', caption = sub_caption }
+        sub.style.font = 'heading-2'
+        sub.style.font_color = info.sub_caption_color or { r = 0.6, g = 0.8, b = 1 }
+        sub.style.single_line = false
+        sub.style.bottom_margin = 6
+    end
+
+    local body = scroll.add { type = 'label', caption = text }
+    body.style.single_line = false
+    body.style.horizontally_stretchable = true
+    body.style.font_color = { r = 0.9, g = 0.9, b = 0.9 }
+end
+
+local function on_mts_welcome_tab_built(event)
+    if event.tab_name ~= EXPANSE_TAB_NAME then
+        return
+    end
+    draw_welcome_tab(event.element)
+end
+
+-- A player joined a team (including the initial claim). MTS raises this synchronously
+-- while it sets the player's force -- i.e. BEFORE its spawn teleport -- so building the
+-- surface here means MTS spawns the player straight onto the Expanse world (no flash).
+local function on_mts_player_joined_team(event)
+    local player = game.get_player(event.player_index)
+    if not (player and player.valid) then
+        return
+    end
+    local force_name = event.force_name
+    if not is_team_force_name(force_name) then
+        return
+    end
+    local state = ensure_team_state(force_name)
+    ensure_state_ready(state)
+    expanse.pending_player_teleports[player.index] = {
+        force_name = state_key(state),
+        tick = game.tick + 5
+    }
+    schedule_mts_nauvis_cleanup(state, 180)
+end
+
+-- Fill the Expanse tab in MTS's Team Settings panel with the Expanse player settings
+-- (SpectatorMode, bottom-button position, ...). Player settings only -- no Admin
+-- section and no blueprint toggle (MTS already owns blueprints). The requester-chest
+-- top button still shows the live stats/status as before.
+local function on_mts_team_tab_built(event)
+    if event.tab_name ~= EXPANSE_TAB_NAME then
+        return
+    end
+    local element = event.element
+    if not (element and element.valid) then
+        return
+    end
+    local player = game.get_player(event.player_index)
+    if not (player and player.valid) then
+        return
+    end
+    Config.build_player_config(player, element)
+end
+
+-- mts-v1 event name -> handler. Keys are the exact names passed to get_event_id.
+local MTS_EVENT_HANDLERS = {
+    on_welcome_tab_built  = on_mts_welcome_tab_built,
+    on_player_joined_team = on_mts_player_joined_team,
+    on_team_tab_built     = on_mts_team_tab_built,
+}
+
+-- on_init / on_load / on_configuration_changed. Reads cached ids from storage and
+-- (re-)registers every handler -- no remote.call, so it is safe in on_load.
+local function register_mts_event_handlers()
+    -- Under MTS the Expanse settings/intro live in MTS's panels (welcome + team tab),
+    -- so suppress the Comfy top "menu" (raw-fish) button. Set every session (incl.
+    -- on_load) before any player is created; in standalone the fish button stays.
+    Gui.top_button_enabled = not is_mts_active()
+    local ids = storage.expanse_mts_event_ids
+    if not ids then
+        return
+    end
+    for name, handler in pairs(MTS_EVENT_HANDLERS) do
+        local id = ids[name]
+        if id then
+            script.on_event(id, handler)
+        end
+    end
+end
+
+-- Call only from on_init / on_configuration_changed (remote.call is legal there).
+local function setup_mts_events()
+    if not is_mts_active() then
+        return
+    end
+    -- The intro now lives in the MTS welcome tab, so suppress the standalone popup.
+    Map_info.call_map_info_on_join(false)
+    pcall(remote.call, MTS_INTERFACE, 'register_welcome_tab',
+        { name = EXPANSE_TAB_NAME, caption = 'Expanse', order = 'a' })
+    pcall(remote.call, MTS_INTERFACE, 'register_team_tab',
+        { name = EXPANSE_TAB_NAME, caption = 'Expanse', order = 'm' })
+    local ids = {}
+    for name in pairs(MTS_EVENT_HANDLERS) do
+        local ok, id = pcall(remote.call, MTS_INTERFACE, 'get_event_id', name)
+        if ok and type(id) == 'number' then
+            ids[name] = id
+        end
+    end
+    storage.expanse_mts_event_ids = ids
+    register_mts_event_handlers()
+end
+
 local function on_init()
     ensure_indexes()
     init_state_defaults(expanse, DEFAULT_FORCE_NAME)
@@ -1514,10 +1649,10 @@ local function on_init()
     apply_world_settings()
     if is_mts_active() then
         set_source_surface(expanse)
-        promote_all_mts_team_hosts()
     else
         reset(expanse)
     end
+    setup_mts_events()
 end
 
 local function map_reset(event)
@@ -1550,7 +1685,7 @@ local function on_configuration_changed(_event)
     if SpaceMissions.enabled() then
         script.raise_event(expanse.events.mission_gui_update, {})
     end
-    promote_all_mts_team_hosts()
+    setup_mts_events()
 end
 
 local function on_runtime_mod_setting_changed(event)
@@ -1587,7 +1722,13 @@ local function process_pending_player_teleports()
             if state and state_key(state) == pending.force_name then
                 ensure_state_ready(state)
                 local surface = game.surfaces[state.active_surface_index]
-                place_player_on_expanse_surface(player, surface, { state.square_size * 0.5, state.square_size * 0.5 })
+                -- Only move the player if MTS hasn't already placed them on the team
+                -- surface with a character. For vanilla teams the gameplay surface IS
+                -- the MTS spawn surface, so MTS's placement is final -- re-centering
+                -- here would visibly shift the view ~1 tile a moment after spawn.
+                if surface and (player.surface.index ~= surface.index or not (player.character and player.character.valid)) then
+                    place_player_on_expanse_surface(player, surface, { state.square_size * 0.5, state.square_size * 0.5 })
+                end
                 create_button(player)
                 schedule_mts_nauvis_cleanup(state, 60)
             end
@@ -1659,7 +1800,12 @@ local function process_state_tick(state)
     if state.next_mts_nauvis_cleanup_tick and game.tick >= state.next_mts_nauvis_cleanup_tick then
         cleanup_mts_nauvis_surfaces(state)
     end
-    process_hungry_chests(state)
+    -- Skip the hungry-chest scan for teams with nobody online. A completion just gets
+    -- detected on the next tick after someone reconnects (the fed items are still in the
+    -- chest), so no progress is lost -- offline teams simply don't cost per-tick work.
+    if state_has_connected_players(state) then
+        process_hungry_chests(state)
+    end
     if SpaceMissions.enabled() then
         SpaceMissions.ensure_support(state)
         SpaceMissions.launch_rockets(state)
@@ -1672,7 +1818,6 @@ local function process_state_tick(state)
 end
 
 local function on_tick()
-    promote_all_mts_team_hosts()
     process_pending_player_teleports()
     for _, state in iter_states() do
         process_state_tick(state)
@@ -3429,6 +3574,7 @@ commands.add_command(
 
 Event.on_init(on_init)
 Event.on_configuration_changed(on_configuration_changed)
+Event.on_load(register_mts_event_handlers)
 Event.on_nth_tick(60, on_tick)
 Event.add(defines.events.on_chunk_generated, on_chunk_generated)
 Event.add(defines.events.on_area_cloned, on_area_cloned)
@@ -3438,7 +3584,6 @@ Event.add(defines.events.on_gui_closed, on_gui_closed)
 Event.add(defines.events.on_gui_opened, on_gui_opened)
 Event.add(defines.events.on_gui_click, on_gui_click)
 Event.add(defines.events.on_player_joined_game, on_player_joined_game)
-Event.add(defines.events.on_player_changed_force, on_player_changed_force)
 Event.add(defines.events.on_pre_player_left_game, on_pre_player_left_game)
 Event.add(defines.events.on_pre_player_mined_item, infini_resource)
 Event.add(defines.events.on_robot_pre_mined, infini_resource)

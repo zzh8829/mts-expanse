@@ -1,4 +1,28 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.4
+Date: 2026-05-28
+  Features:
+    - Under Multi-Team Support, the map intro now shows as a tab on MTS's unified
+      welcome screen, and the Expanse player settings (SpectatorMode, button position)
+      show as a tab on MTS's Team Settings panel, instead of the standalone Config GUI.
+      Requires Multi-Team Support 0.4.43+ for the welcome-screen integration.
+  Changes:
+    - No spawn flash: vanilla teams now play directly on the surface MTS spawns them
+      onto. The Expanse world is generated on Nauvis and replicated to each team by
+      MTS's clone_mirror, so players are never relocated to a throwaway surface.
+    - Team setup is driven by MTS's on_player_joined_team event, and surfaces are
+      resolved via MTS's get_surface_owner where available.
+    - The standalone Config GUI (and its admin Blueprint Library / Spaghett options) is
+      hidden under MTS but unchanged in non-MTS games.
+  Bugfixes:
+    - Cross-team parity: per-cell randomness (including the starting tree species) is
+      now keyed by planet and position, so every team gets identical content.
+    - Team hosts are no longer auto-promoted to Factorio admin (that granted server
+      admin to anyone who started a team); the /expanse-* commands still require admin.
+    - A team leader spectating another team is no longer pulled back to their base.
+  Optimizations:
+    - The hungry-chest scan is skipped for teams with nobody online.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.3
 Date: 28. 05. 2026
   Changes:
