@@ -299,14 +299,31 @@ end
 
 local function state_surface_name(force_name)
     if is_team_force_name(force_name) then
-        return force_name .. '-expanse'
+        -- Vanilla teams play directly on the surface MTS spawns them onto
+        -- (team-N-nauvis), so the player is never relocated to a second surface
+        -- and never sees a Nauvis frame on spawn. MTS's clone_mirror replicates
+        -- the canonical world (real nauvis) onto each team-N-nauvis, exactly as it
+        -- does for dangOreus. Space Age still uses a dedicated surface for now (its
+        -- MTS spawn surface is a planet variant owned by MTS's planet_map).
+        if SA then
+            return force_name .. '-expanse'
+        end
+        return force_name .. '-nauvis'
     end
     return DEFAULT_SURFACE_NAME
 end
 
 local function state_source_surface_name(force_name)
+    -- The canonical Expanse world is generated on the real "nauvis" surface -- the
+    -- same surface MTS's clone_mirror reads from. That makes Expanse a plain nauvis
+    -- decorator (like dangOreus): clone_mirror copies the *Expanse* world onto every
+    -- team-N-nauvis (identical for all teams, no vanilla/crash-site bleed) and the
+    -- mod behaves the same with or without MTS. Standalone already uses nauvis here.
     if is_mts_active() then
-        return SHARED_SOURCE_SURFACE
+        if SA then
+            return SHARED_SOURCE_SURFACE
+        end
+        return DEFAULT_SOURCE_SURFACE
     end
     if is_team_force_name(force_name) then
         return force_name .. '-expanse-source'
@@ -456,7 +473,7 @@ state_from_surface = function(surface)
     if state_matches_surface(expanse, surface) then
         return expanse
     end
-    local force_name = surface.name:match('^(team%-%d+)%-expanse') or surface.name:match('^(team%-%d+)%-NonOrbit$')
+    local force_name = surface.name:match('^(team%-%d+)%-expanse') or surface.name:match('^(team%-%d+)%-nauvis$') or surface.name:match('^(team%-%d+)%-NonOrbit$')
     if force_name then
         return ensure_team_state(force_name)
     end
@@ -1136,6 +1153,21 @@ local function on_chunk_generated(event)
         end
     end
     surface.set_tiles(tiles, true)
+    -- Under MTS, clone_mirror copies the full canonical Nauvis (= the Expanse source
+    -- world) onto this surface, including ore/trees/rocks for cells this team hasn't
+    -- opened yet. Strip that environment out of locked cells so the void stays empty
+    -- until a cell is unlocked. Only environmental entities are cleared -- never
+    -- containers/machines -- so the frontier hungry chests are never touched.
+    for _, entity in pairs(surface.find_entities_filtered({ area = event.area, type = { 'resource', 'tree', 'cliff', 'fish', 'simple-entity' } })) do
+        if entity.valid then
+            local ex = math.floor(entity.position.x)
+            local ey = math.floor(entity.position.y)
+            local in_initial_cell = ex >= 0 and ex < state.square_size and ey >= 0 and ey < state.square_size
+            if not in_initial_cell and not is_tile_in_open_cell(state, ex, ey) then
+                entity.destroy()
+            end
+        end
+    end
     destroy_natural_enemy_entities(surface, event.area, state)
 end
 
@@ -1474,6 +1506,12 @@ local function on_player_changed_force(event)
         return
     end
     local state = ensure_team_state(player.force.name)
+    -- Build the team's gameplay surface now, synchronously. on_player_changed_force
+    -- fires from inside MTS's claim_slot (when player.force is set) BEFORE MTS runs its
+    -- spawn teleport, so the surface exists by name when MTS's setup_player_surface
+    -- looks it up -- MTS then spawns the player directly onto the Expanse world rather
+    -- than a raw Nauvis variant. No relocation, no flash.
+    ensure_state_ready(state)
     expanse.pending_player_teleports[player.index] = {
         force_name = state_key(state),
         tick = game.tick + 5
@@ -1587,7 +1625,13 @@ local function process_pending_player_teleports()
             if state and state_key(state) == pending.force_name then
                 ensure_state_ready(state)
                 local surface = game.surfaces[state.active_surface_index]
-                place_player_on_expanse_surface(player, surface, { state.square_size * 0.5, state.square_size * 0.5 })
+                -- Only move the player if MTS hasn't already placed them on the team
+                -- surface with a character. For vanilla teams the gameplay surface IS
+                -- the MTS spawn surface, so MTS's placement is final -- re-centering
+                -- here would visibly shift the view ~1 tile a moment after spawn.
+                if surface and (player.surface.index ~= surface.index or not (player.character and player.character.valid)) then
+                    place_player_on_expanse_surface(player, surface, { state.square_size * 0.5, state.square_size * 0.5 })
+                end
                 create_button(player)
                 schedule_mts_nauvis_cleanup(state, 60)
             end
