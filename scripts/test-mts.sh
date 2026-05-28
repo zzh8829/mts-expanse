@@ -308,6 +308,21 @@ local function assert_hungry_chest_expanded(context)
     end
 end
 
+local function assert_synced_hungry_chest_reroll()
+    local probe = remote.call('mts_expanse', 'probe_synced_hungry_chest_reroll', 'team-1', 'team-2')
+    if type(probe) ~= 'table' or probe.ok ~= true then
+        fail(
+            'synced hungry chest reroll probe failed: error=' .. tostring(probe and probe.error) ..
+            ' initial_a=' .. tostring(probe and probe.initial_a) ..
+            ' initial_b=' .. tostring(probe and probe.initial_b) ..
+            ' reroll_a=' .. tostring(probe and probe.reroll_a) ..
+            ' reroll_b=' .. tostring(probe and probe.reroll_b) ..
+            ' generation_a=' .. tostring(probe and probe.generation_a) ..
+            ' generation_b=' .. tostring(probe and probe.generation_b)
+        )
+    end
+end
+
 local function assert_nonorbit_support(force_name, surface_name)
     local nonorbit = game.surfaces[surface_name]
     if not nonorbit then fail(surface_name .. ' support surface missing') end
@@ -393,6 +408,22 @@ local function assert_invasion_tracking(force_name)
             ' tracker_scheduled=' .. tostring(tracker.scheduled_events) ..
             ' before_schedule=' .. tostring(probe and probe.before_schedule) ..
             ' error=' .. tostring(probe and (probe.error or regular.error or admin.error))
+        )
+    end
+    return probe
+end
+
+local function assert_cell_open_biters(force_name)
+    local probe = remote.call('mts_expanse', 'probe_cell_open_biters', force_name)
+    if type(probe) ~= 'table' or probe.ok ~= true then
+        fail(
+            force_name .. ' cell-open biter probe failed: opened=' .. tostring(probe and probe.opened) ..
+            ' spawned=' .. tostring(probe and probe.spawned) ..
+            ' before_cell_biters=' .. tostring(probe and probe.before_cell_biters) ..
+            ' after_cell_biters=' .. tostring(probe and probe.after_cell_biters) ..
+            ' natural_enemy_count=' .. tostring(probe and probe.natural_enemy_count) ..
+            ' source_prepared=' .. tostring(probe and probe.source_prepared) ..
+            ' error=' .. tostring(probe and probe.error)
         )
     end
     return probe
@@ -519,6 +550,7 @@ local completion_context
 
 script.on_nth_tick(30, function()
     if not completion_context then
+        assert_synced_hungry_chest_reroll()
         local team1, request1, rocket1, completion1, layout1 = assert_team('team-1')
         local team2, request2, rocket2, completion2, layout2 = assert_team('team-2')
         if team1.shared_seed ~= team2.shared_seed then
@@ -610,6 +642,7 @@ script.on_nth_tick(30, function()
                     ' error=' .. tostring(admin_probe and admin_probe.error)
                 )
             end
+            assert_cell_open_biters(force_name)
             local variants_probe = remote.call('mts_expanse', 'probe_admin_open_variants', force_name)
             if type(variants_probe) ~= 'table' or variants_probe.ok ~= true then
                 local open_at = variants_probe and variants_probe.open_at or {}

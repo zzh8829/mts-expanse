@@ -511,17 +511,267 @@ local function destroy_natural_enemy_entities(surface, area)
     return removed
 end
 
-function Public.spawn_units(expanse, spawner)
-    local evolution = game.forces.enemy.get_evolution_factor(spawner.surface)
-    local position = spawner.position
+local function track_cell_biter(expanse, entity)
+    if not (expanse and entity and entity.valid and entity.unit_number) then
+        return
+    end
+    expanse.cell_biter_units = expanse.cell_biter_units or {}
+    expanse.cell_biter_units[entity.unit_number] = true
+end
+
+local function create_tracked_enemy(expanse, surface, name, position)
+    if not (surface and surface.valid and name and position) then
+        return nil
+    end
+    local free_pos = surface.find_non_colliding_position(name, position, 8, 0.25)
+        or surface.find_non_colliding_position(name, position, 16, 0.5)
+    if not free_pos then
+        return nil
+    end
+    local entity = surface.create_entity({ name = name, position = free_pos, force = 'enemy' })
+    if entity then
+        track_cell_biter(expanse, entity)
+    end
+    return entity
+end
+
+local function spawn_units_at_position(expanse, surface, position, salt)
+    if not (surface and surface.valid and position) then
+        return 0
+    end
+
+    local evolution = game.forces.enemy.get_evolution_factor(surface)
     local base = expanse and expanse.spawner_spawn_base or 4
     local scale = expanse and expanse.spawner_spawn_evolution_scale or 8
-    local rng = expanse and expanse.sync_invasions ~= false and make_cell_rng(expanse, position, 30000) or nil
-    for i = 1, base + math.floor(scale * evolution), 1 do
-        local biter_roll = BiterRaffle.roll('mixed', evolution, rng)
-        local free_pos = spawner.surface.find_non_colliding_position(biter_roll, { x = position.x + random_int(rng, -8, 8), y = position.y + random_int(rng, -8, 8) }, 12, 0.05)
-        spawner.surface.create_entity({ name = biter_roll, position = free_pos or position, force = 'enemy' })
+    local count = math.floor(base + math.floor(scale * evolution))
+    if count <= 0 then
+        return 0
     end
+
+    local rng = expanse and expanse.sync_invasions ~= false and make_cell_rng(expanse, position, salt or 30000) or nil
+    local created = 0
+    for _ = 1, count, 1 do
+        local biter_roll = BiterRaffle.roll('mixed', evolution, rng)
+        if biter_roll then
+            local candidate = { x = position.x + random_int(rng, -8, 8), y = position.y + random_int(rng, -8, 8) }
+            local free_pos = surface.find_non_colliding_position(biter_roll, candidate, 12, 0.05)
+                or surface.find_non_colliding_position(biter_roll, position, 12, 0.25)
+            if free_pos then
+                local unit = create_tracked_enemy(expanse, surface, biter_roll, free_pos)
+                if unit then
+                    created = created + 1
+                end
+            end
+        end
+    end
+    return created
+end
+
+local function deterministic_cell_biter_position(expanse, left_top, salt)
+    local square_size = expanse.square_size or 15
+    local margin = square_size > 4 and 2 or 1
+    local span = math.max(1, square_size - margin * 2)
+    salt = salt or 8100
+    return {
+        x = left_top.x + margin + cell_random_int(expanse, left_top, salt + 2, span) - 1,
+        y = left_top.y + margin + cell_random_int(expanse, left_top, salt + 3, span) - 1
+    }
+end
+
+local function random_cell_biter_position(expanse, left_top)
+    local square_size = expanse.square_size or 15
+    local margin = square_size > 4 and 2 or 1
+    local span = math.max(1, square_size - margin * 2)
+    return {
+        x = left_top.x + margin + math.random(0, span - 1),
+        y = left_top.y + margin + math.random(0, span - 1)
+    }
+end
+
+local function source_spawner_positions(expanse, source_surface, area, left_top, meta_cell)
+    if meta_cell and meta_cell.cell_biter_source_positions then
+        return table.deepcopy(meta_cell.cell_biter_source_positions)
+    end
+
+    local positions = {}
+    if source_surface and source_surface.valid then
+        for _, entity in pairs(source_surface.find_entities_filtered({ area = area, type = 'unit-spawner', force = 'enemy' })) do
+            positions[#positions + 1] = {
+                name = entity.name,
+                x = entity.position.x,
+                y = entity.position.y
+            }
+        end
+    end
+    table.sort(positions, function(a, b)
+        if a.x ~= b.x then
+            return a.x < b.x
+        end
+        return a.y < b.y
+    end)
+
+    if meta_cell then
+        meta_cell.cell_biter_source_positions = table.deepcopy(positions)
+        if #positions > 0 and meta_cell.cell_biter_spawn == nil then
+            meta_cell.cell_biter_spawn = true
+        end
+    end
+
+    return positions
+end
+
+local function camp_entry_position(entry)
+    if not entry then
+        return nil
+    end
+    if entry.position then
+        return entry.position
+    end
+    return { x = entry.x, y = entry.y }
+end
+
+local function pick_spawner_name(rng)
+    if random_int(rng, 1, 4) == 1 then
+        return 'spitter-spawner'
+    end
+    return 'biter-spawner'
+end
+
+local function build_source_camp(source_positions)
+    local camp = { entities = {}, unit_sources = {} }
+    for _, entry in ipairs(source_positions or {}) do
+        local position = camp_entry_position(entry)
+        if position then
+            camp.entities[#camp.entities + 1] = {
+                name = entry.name or 'biter-spawner',
+                position = { x = position.x, y = position.y }
+            }
+            camp.unit_sources[#camp.unit_sources + 1] = { x = position.x, y = position.y }
+        end
+    end
+    return camp
+end
+
+local function build_synthetic_camp(expanse, left_top, meta_cell, surface)
+    if expanse.sync_invasions == false then
+        if math.random(1, 4) ~= 1 then
+            return { entities = {}, unit_sources = {} }
+        end
+    elseif meta_cell then
+        if meta_cell.cell_biter_spawn == nil then
+            meta_cell.cell_biter_spawn = cell_random_int(expanse, left_top, 8101, 4) == 1
+        end
+        if not meta_cell.cell_biter_spawn then
+            return { entities = {}, unit_sources = {} }
+        end
+    elseif cell_random_int(expanse, left_top, 8101, 4) ~= 1 then
+        return { entities = {}, unit_sources = {} }
+    end
+
+    local rng = expanse.sync_invasions ~= false and make_cell_rng(expanse, left_top, 8200) or nil
+    local evolution = surface and surface.valid and game.forces.enemy.get_evolution_factor(surface) or game.forces.enemy.evolution_factor
+    local distance = math.sqrt(left_top.x ^ 2 + left_top.y ^ 2)
+    local distance_bonus = math.min(2, math.floor(distance / 150))
+    local evolution_bonus = math.min(2, math.floor(evolution * 3))
+    local spawner_count = 1 + distance_bonus + evolution_bonus + random_int(rng, 0, 1)
+    local worm_count = math.max(1, spawner_count - 1 + random_int(rng, 0, 2))
+    local camp = { entities = {}, unit_sources = {} }
+
+    if meta_cell and meta_cell.cell_biter_position then
+        camp.entities[#camp.entities + 1] = {
+            name = pick_spawner_name(rng),
+            position = table.deepcopy(meta_cell.cell_biter_position)
+        }
+        camp.unit_sources[#camp.unit_sources + 1] = table.deepcopy(meta_cell.cell_biter_position)
+    end
+
+    while #camp.unit_sources < spawner_count do
+        local index = #camp.unit_sources + 1
+        local position = expanse.sync_invasions ~= false
+            and deterministic_cell_biter_position(expanse, left_top, 8200 + index * 10)
+            or random_cell_biter_position(expanse, left_top)
+        camp.entities[#camp.entities + 1] = {
+            name = pick_spawner_name(rng),
+            position = position
+        }
+        camp.unit_sources[#camp.unit_sources + 1] = { x = position.x, y = position.y }
+    end
+
+    for index = 1, worm_count, 1 do
+        local position = expanse.sync_invasions ~= false
+            and deterministic_cell_biter_position(expanse, left_top, 9100 + index * 10)
+            or random_cell_biter_position(expanse, left_top)
+        camp.entities[#camp.entities + 1] = {
+            name = BiterRaffle.roll('worm', evolution, rng) or 'small-worm-turret',
+            position = position
+        }
+    end
+
+    return camp
+end
+
+local function cell_biter_camp(expanse, left_top, source_positions, meta_cell, surface)
+    if source_positions and #source_positions > 0 then
+        local camp = build_source_camp(source_positions)
+        if meta_cell and not meta_cell.cell_biter_camp then
+            meta_cell.cell_biter_camp = table.deepcopy(camp)
+        end
+        return camp
+    end
+    if meta_cell and meta_cell.cell_biter_camp then
+        return table.deepcopy(meta_cell.cell_biter_camp)
+    end
+
+    local camp = build_synthetic_camp(expanse, left_top, meta_cell, surface)
+    if meta_cell and (camp.entities[1] or camp.unit_sources[1]) then
+        meta_cell.cell_biter_camp = table.deepcopy(camp)
+    end
+    return camp
+end
+
+function Public.spawn_units(expanse, spawner)
+    if spawner == nil and expanse and expanse.valid then
+        spawner = expanse
+        expanse = nil
+    end
+    if not (spawner and spawner.valid) then
+        return 0
+    end
+    return spawn_units_at_position(expanse, spawner.surface, spawner.position, 30000)
+end
+
+function Public.spawn_cell_biters(expanse, surface, left_top, source_positions, meta_cell)
+    if not (expanse and surface and surface.valid and left_top) then
+        return 0
+    end
+    if game.tick == expanse.reset_tick then
+        return 0
+    end
+
+    meta_cell = meta_cell or (expanse.sync_invasions ~= false and ensure_meta_cell(expanse, left_top) or nil)
+    local camp = cell_biter_camp(expanse, left_top, source_positions, meta_cell, surface)
+    local spawned = 0
+    local structures = 0
+    for _, entity in ipairs(camp.entities or {}) do
+        local created = create_tracked_enemy(expanse, surface, entity.name, entity.position)
+        if created then
+            structures = structures + 1
+        end
+    end
+    for index, position in ipairs(camp.unit_sources or {}) do
+        spawned = spawned + spawn_units_at_position(expanse, surface, position, 32000 + index * 1000)
+    end
+
+    if spawned > 0 or structures > 0 then
+        expanse.cell_biter_tracker = expanse.cell_biter_tracker or {}
+        expanse.cell_biter_tracker.spawned = (expanse.cell_biter_tracker.spawned or 0) + spawned
+        expanse.cell_biter_tracker.structures = (expanse.cell_biter_tracker.structures or 0) + structures
+        expanse.cell_biter_tracker.last_spawn_tick = game.tick
+        expanse.cell_biter_tracker.last_spawned = spawned
+        expanse.cell_biter_tracker.last_structures = structures
+        expanse.cell_biter_tracker.last_cell = { x = left_top.x, y = left_top.y }
+    end
+    return spawned
 end
 
 function Public.get_item_tooltip(name, quality, include_value, force)
@@ -875,6 +1125,7 @@ function Public.expand(expanse, left_top)
 
     local area = { { left_top.x, left_top.y }, { left_top.x + square_size, left_top.y + square_size } }
     local surface = game.surfaces[expanse.active_surface_index]
+    local source_positions = source_spawner_positions(expanse, source_surface, area, left_top, meta_cell)
     destroy_natural_enemy_entities(source_surface, area)
 
     source_surface.clone_area(
@@ -891,6 +1142,7 @@ function Public.expand(expanse, left_top)
         }
     )
     destroy_natural_enemy_entities(surface, area)
+    Public.spawn_cell_biters(expanse, surface, left_top, source_positions, meta_cell)
 
     if not expanse.suppress_hungry_chests then
         for _, candidate in pairs(frontier_candidates_from_open_cell(expanse, left_top)) do
@@ -976,23 +1228,24 @@ local function init_container(expanse, entity, budget, known_left_top)
         [10] = 3
     }
     local tier, distance = calculate_tier(expanse, left_top)
-    local meta_cell = not budget and expanse.sync_cell_content ~= false and ensure_meta_cell(expanse, left_top) or nil
+    local meta_cell = expanse.sync_cell_content ~= false and ensure_meta_cell(expanse, left_top) or nil
     local cell_value
+    local reroll_generation = meta_cell and (meta_cell.price_reroll_generation or 0) or 0
     local price_entries = meta_cell and meta_cell.price_entries or nil
     if price_entries then
         tier = meta_cell.tier or tier
         distance = meta_cell.distance or distance
-        cell_value = meta_cell.cell_value
+        cell_value = meta_cell.price_budget or meta_cell.cell_value
     else
         local item_stacks = {}
-        cell_value = budget or get_cell_value(expanse, left_top) * tier_multi[tier]
+        cell_value = budget or meta_cell and meta_cell.price_budget or get_cell_value(expanse, left_top) * tier_multi[tier]
         local locker = get_tier_locker(tier)
         if locker then
             item_stacks[locker] = {['normal'] = 10}
         end
         local roll_count = expanse.price_roll_count or 3
         for roll_index = 1, roll_count, 1 do
-            local rng = expanse.sync_cell_content ~= false and make_cell_rng(expanse, left_top, 10000 + roll_index * 1000) or nil
+            local rng = expanse.sync_cell_content ~= false and make_cell_rng(expanse, left_top, 10000 + reroll_generation * 100000 + roll_index * 1000) or nil
             for _, stack in pairs(Price_raffle.roll(math.floor(cell_value / roll_count), 3, tier, nil, state_force(expanse), rng)) do
                 if not item_stacks[stack.name] then
                     item_stacks[stack.name] = {[stack.quality] = stack.count}
@@ -1024,8 +1277,10 @@ local function init_container(expanse, entity, budget, known_left_top)
         if meta_cell then
             meta_cell.tier = tier
             meta_cell.distance = distance
-            meta_cell.cell_value = cell_value
+            meta_cell.cell_value = meta_cell.cell_value or cell_value
+            meta_cell.price_budget = cell_value
             meta_cell.price_entries = table.deepcopy(price_entries)
+            meta_cell.price_reroll_generation = reroll_generation
         end
     end
 
@@ -1044,6 +1299,7 @@ local function init_container(expanse, entity, budget, known_left_top)
         left_top = left_top,
         price = price,
         revealed = true,
+        reroll_generation = reroll_generation,
         force_name = expanse.force_name,
         surface_index = expanse.active_surface_index
     }
@@ -1101,8 +1357,19 @@ function Public.set_container(expanse, entity, known_left_top, reveal)
             if count_removed > 0 then
                 expanse.cost_stats[Public.make_key('coin', 'normal')] = (expanse.cost_stats[Public.make_key('coin', 'normal')] or 0) + count_removed
                 script.raise_event(expanse.events.gui_update, { item = 'coin', quality = 'normal', force_name = expanse.force_name })
+                local remaining_budget = get_remaining_budget(expanse, container)
+                local meta_cell = expanse.sync_cell_content ~= false and ensure_meta_cell(expanse, container.left_top) or nil
+                if meta_cell then
+                    local container_generation = container.reroll_generation or 0
+                    local canonical_generation = meta_cell.price_reroll_generation or 0
+                    if canonical_generation <= container_generation then
+                        meta_cell.price_reroll_generation = canonical_generation + 1
+                        meta_cell.price_entries = nil
+                        meta_cell.price_budget = remaining_budget
+                    end
+                end
                 remove_old_renders(container)
-                init_container(expanse, entity, get_remaining_budget(expanse, container), container.left_top)
+                init_container(expanse, entity, remaining_budget, container.left_top)
                 container = expanse.containers[entity.unit_number]
                 game.print({ 'expanse.chest_reset', { 'expanse.gps', math.floor(entity.position.x), math.floor(entity.position.y), game.surfaces[expanse.active_surface_index].name } })
             end

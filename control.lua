@@ -112,6 +112,12 @@ remote.add_interface(
         probe_reveal_first_hungry_chest = function (force_name)
             return Expanse.probe_reveal_first_hungry_chest(force_name)
         end,
+        probe_reroll_first_hungry_chest = function (force_name)
+            return Expanse.probe_reroll_first_hungry_chest(force_name)
+        end,
+        probe_synced_hungry_chest_reroll = function (force_name_a, force_name_b)
+            return Expanse.probe_synced_hungry_chest_reroll(force_name_a, force_name_b)
+        end,
         probe_complete_first_hungry_chest = function (force_name)
             return Expanse.probe_complete_first_hungry_chest(force_name)
         end,
@@ -120,6 +126,9 @@ remote.add_interface(
         end,
         probe_invasion_tracking = function (force_name)
             return Expanse.probe_invasion_tracking(force_name)
+        end,
+        probe_cell_open_biters = function (force_name)
+            return Expanse.probe_cell_open_biters(force_name)
         end
     }
 )

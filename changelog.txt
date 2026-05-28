@@ -1,0 +1,12 @@
+---------------------------------------------------------------------------------------------------
+Version: 0.1.2
+Date: 27. 05. 2026
+  Changes:
+    - Added deterministic cell-open biter camps that are tracked separately from stripped natural enemies.
+    - Added automated probes for hungry chest rerolls, synchronized team rerolls, and cell-open biter spawning.
+  Bugfixes:
+    - Fixed coin rerolls on hungry chests.
+    - Fixed synchronized chest rerolls so teams that reroll the same cell receive the same result.
+    - Fixed cell-open biter behavior for regular opens and admin opens.
+  Locale:
+    - Clarified cell-open spawner setting descriptions.

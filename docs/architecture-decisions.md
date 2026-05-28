@@ -68,6 +68,11 @@ chest unlocks, and invasion flow compatible with MTS. If a future change adds
 enemy content, it must write that decision into the meta map when cross-team
 synchronization is enabled.
 
+Cell-open biters are explicit Expanse content, not leftover autoplace. Their
+spawn decision, camp layout, spawner/worm entities, and spawned units are stored
+or tracked through the meta-map cell when synchronized biters are enabled, and
+spawned enemy content is tracked separately from stripped natural enemies.
+
 ## Cross-Team Synchronization Toggles
 
 The mod settings expose synchronization controls for:

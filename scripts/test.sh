@@ -179,6 +179,19 @@ local function reveal_first_hungry_chest(label)
     return assert_state(label .. ' revealed')
 end
 
+local function assert_hungry_chest_reroll(label)
+    local probe = remote.call('mts_expanse', 'probe_reroll_first_hungry_chest')
+    if type(probe) ~= 'table' or probe.ok ~= true then
+        error(
+            label .. ': hungry chest reroll probe failed: error=' .. tostring(probe and probe.error) ..
+            ' before=' .. tostring(probe and probe.before_signature) ..
+            ' after=' .. tostring(probe and probe.after_signature) ..
+            ' before_generation=' .. tostring(probe and probe.before_generation) ..
+            ' after_generation=' .. tostring(probe and probe.after_generation)
+        )
+    end
+end
+
 local function assert_admin_open_chest_lifecycle()
     local probe = remote.call('mts_expanse', 'probe_admin_open')
     if type(probe) ~= 'table' then
@@ -201,6 +214,24 @@ local function assert_admin_open_chest_lifecycle()
             ' after_invasion_candidates=' .. tostring(probe.after_invasion_candidates) ..
             ' before_schedule=' .. tostring(probe.before_schedule) ..
             ' after_schedule=' .. tostring(probe.after_schedule) ..
+            ' error=' .. tostring(probe.error)
+        )
+    end
+end
+
+local function assert_cell_open_biters()
+    local probe = remote.call('mts_expanse', 'probe_cell_open_biters')
+    if type(probe) ~= 'table' then
+        error('cell-open biter probe did not return a table')
+    end
+    if probe.ok ~= true then
+        error(
+            'cell-open biter probe failed: opened=' .. tostring(probe.opened) ..
+            ' spawned=' .. tostring(probe.spawned) ..
+            ' before_cell_biters=' .. tostring(probe.before_cell_biters) ..
+            ' after_cell_biters=' .. tostring(probe.after_cell_biters) ..
+            ' natural_enemy_count=' .. tostring(probe.natural_enemy_count) ..
+            ' source_prepared=' .. tostring(probe.source_prepared) ..
             ' error=' .. tostring(probe.error)
         )
     end
@@ -437,6 +468,12 @@ script.on_nth_tick(
                 error('reset did not return true')
             end
             assert_hungry_chest_hidden('after reset')
+            assert_hungry_chest_reroll('after reset')
+            ok = remote.call('mts_expanse', 'reset')
+            if ok ~= true then
+                error('reset after reroll probe did not return true')
+            end
+            assert_hungry_chest_hidden('after reroll reset')
             completion_context = fill_first_hungry_chest('after reset')
             return
         end
@@ -444,9 +481,10 @@ script.on_nth_tick(
             return
 	        end
         if not completion_context.post_completion_probes_done then
-	        assert_hungry_chest_expanded('after chest completion', completion_context)
-	        assert_admin_open_chest_lifecycle()
-	        assert_admin_open_variants()
+		        assert_hungry_chest_expanded('after chest completion', completion_context)
+		        assert_admin_open_chest_lifecycle()
+		        assert_cell_open_biters()
+		        assert_admin_open_variants()
 	        assert_frontier_repair()
 	        assert_vanilla_rocket_gating()
 	        assert_rocket_delivery()

@@ -381,6 +381,8 @@ local function init_state_defaults(state, force_name)
     state.use_space_platform = config.use_space_platform
     state.nonspace_support_size = config.nonspace_support_size
     state.rocket_launch_weight_threshold = config.rocket_launch_weight_threshold
+    state.cell_biter_units = state.cell_biter_units or {}
+    state.cell_biter_tracker = state.cell_biter_tracker or {}
 end
 
 local function ensure_team_state(force_name)
@@ -858,6 +860,8 @@ reset = function(state)
     state.invasion_candidates = {}
     state.invasion_candidate_cells = {}
     state.invasion_tracker = {}
+    state.cell_biter_units = {}
+    state.cell_biter_tracker = {}
     state.lightning_tiles = {}
     state.schedule = {}
     state.size = 1
@@ -998,7 +1002,15 @@ local function is_natural_enemy_entity(entity)
         and (entity.force.name == 'enemy' or entity.force.name == 'neutral')
 end
 
-local function count_natural_enemy_entities(surface, area)
+local function is_tracked_cell_biter(state, entity)
+    return state
+        and state.cell_biter_units
+        and entity
+        and entity.unit_number
+        and state.cell_biter_units[entity.unit_number] == true
+end
+
+local function count_natural_enemy_entities(surface, area, state)
     if not (surface and surface.valid) then
         return 0
     end
@@ -1008,14 +1020,31 @@ local function count_natural_enemy_entities(surface, area)
     end
     local count = 0
     for _, entity in pairs(surface.find_entities_filtered(filters)) do
-        if is_natural_enemy_entity(entity) then
+        if is_natural_enemy_entity(entity) and not is_tracked_cell_biter(state, entity) then
             count = count + 1
         end
     end
     return count
 end
 
-destroy_natural_enemy_entities = function(surface, area)
+local function count_tracked_cell_biters(state, surface, area)
+    if not (state and surface and surface.valid) then
+        return 0
+    end
+    local filters = { type = { 'unit', 'turret', 'unit-spawner' }, force = 'enemy' }
+    if area then
+        filters.area = area
+    end
+    local count = 0
+    for _, entity in pairs(surface.find_entities_filtered(filters)) do
+        if is_tracked_cell_biter(state, entity) then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+destroy_natural_enemy_entities = function(surface, area, state)
     if not (surface and surface.valid) then
         return 0
     end
@@ -1025,7 +1054,7 @@ destroy_natural_enemy_entities = function(surface, area)
     end
     local removed = 0
     for _, entity in pairs(surface.find_entities_filtered(filters)) do
-        if is_natural_enemy_entity(entity) then
+        if is_natural_enemy_entity(entity) and not is_tracked_cell_biter(state, entity) then
             entity.destroy()
             removed = removed + 1
         end
@@ -1107,7 +1136,7 @@ local function on_chunk_generated(event)
         end
     end
     surface.set_tiles(tiles, true)
-    destroy_natural_enemy_entities(surface, event.area)
+    destroy_natural_enemy_entities(surface, event.area, state)
 end
 
 local function on_area_cloned(event)
@@ -2241,6 +2270,155 @@ commands.add_command(
         return nil
     end
 
+    local function admin_open_target_for_left_top(state, left_top)
+        if not left_top then
+            return nil
+        end
+        for unit_number, container in pairs(state.containers or {}) do
+            if container.left_top and container.entity and container.entity.valid and container.left_top.x == left_top.x and container.left_top.y == left_top.y then
+                return {
+                    left_top = { x = container.left_top.x, y = container.left_top.y },
+                    unit_number = unit_number,
+                    entity = container.entity
+                }
+            end
+        end
+        return nil
+    end
+
+    local function price_signature(container)
+        local rows = {}
+        for _, item_stack in pairs(container and container.price or {}) do
+            rows[#rows + 1] = table.concat({
+                item_stack.name or '',
+                item_stack.quality or 'normal',
+                tostring(item_stack.count or 0)
+            }, '|')
+        end
+        table.sort(rows)
+        return table.concat(rows, ';')
+    end
+
+    local function reveal_hungry_chest_target(state, target)
+        local expansion_position = Functions.set_container(state, target.entity, target.left_top, true)
+        if expansion_position then
+            handle_completed_container(state, expansion_position)
+        end
+        return state.containers and state.containers[target.unit_number]
+    end
+
+    local function reroll_hungry_chest_target(state, target)
+        local container = state.containers and state.containers[target.unit_number]
+        if not container then
+            container = reveal_hungry_chest_target(state, target)
+        end
+        if not (container and target.entity and target.entity.valid) then
+            return nil, 'missing revealed hungry chest'
+        end
+
+        local inventory = target.entity.get_inventory(defines.inventory.chest)
+        if not inventory then
+            return nil, 'missing hungry chest inventory'
+        end
+        if inventory.insert({ name = 'coin', count = 1 }) < 1 then
+            return nil, 'could not insert reroll coin'
+        end
+
+        local expansion_position = Functions.set_container(state, target.entity, target.left_top, true)
+        if expansion_position then
+            handle_completed_container(state, expansion_position)
+        end
+
+        container = state.containers and state.containers[target.unit_number]
+        if not container then
+            return nil, 'hungry chest completed during reroll'
+        end
+        return {
+            signature = price_signature(container),
+            generation = container.reroll_generation or 0,
+            price_count = #(container.price or {})
+        }
+    end
+
+    function Public.probe_reroll_first_hungry_chest(force_name)
+        local state = force_name and state_from_force_name(force_name) or expanse
+        ensure_state_ready(state)
+        local target = first_admin_open_target(state)
+        if not target then
+            return { ok = false, error = 'missing hungry chest target', force_name = state_key(state) }
+        end
+
+        local container = reveal_hungry_chest_target(state, target)
+        if not container then
+            return { ok = false, error = 'hungry chest did not reveal', force_name = state_key(state) }
+        end
+        local before_signature = price_signature(container)
+        local before_generation = container.reroll_generation or 0
+        local after, err = reroll_hungry_chest_target(state, target)
+
+        return {
+            ok = after ~= nil and after.signature ~= before_signature and after.generation > before_generation,
+            error = after and nil or err,
+            force_name = state_key(state),
+            unit_number = target.unit_number,
+            left_top = target.left_top,
+            before_signature = before_signature,
+            after_signature = after and after.signature or nil,
+            before_generation = before_generation,
+            after_generation = after and after.generation or nil,
+            price_count = after and after.price_count or nil
+        }
+    end
+
+    function Public.probe_synced_hungry_chest_reroll(force_name_a, force_name_b)
+        local state_a = state_from_force_name(force_name_a or 'team-1')
+        local state_b = state_from_force_name(force_name_b or 'team-2')
+        reset(state_a)
+        reset(state_b)
+        ensure_state_ready(state_a)
+        ensure_state_ready(state_b)
+
+        local target_a = first_admin_open_target(state_a)
+        if not target_a then
+            return { ok = false, error = 'missing first team hungry chest target', force_name = state_key(state_a) }
+        end
+        local target_b = admin_open_target_for_left_top(state_b, target_a.left_top)
+        if not target_b then
+            return { ok = false, error = 'missing matching second team hungry chest target', left_top = target_a.left_top }
+        end
+
+        local container_a = reveal_hungry_chest_target(state_a, target_a)
+        local container_b = reveal_hungry_chest_target(state_b, target_b)
+        if not (container_a and container_b) then
+            return { ok = false, error = 'failed to reveal matching hungry chests' }
+        end
+
+        local initial_a = price_signature(container_a)
+        local initial_b = price_signature(container_b)
+        local reroll_a, err_a = reroll_hungry_chest_target(state_a, target_a)
+        local reroll_b, err_b = reroll_hungry_chest_target(state_b, target_b)
+        local ok = reroll_a ~= nil
+            and reroll_b ~= nil
+            and initial_a == initial_b
+            and reroll_a.signature == reroll_b.signature
+            and reroll_a.signature ~= initial_a
+            and reroll_a.generation == reroll_b.generation
+
+        return {
+            ok = ok,
+            error = ok and nil or (err_a or err_b or 'synced reroll signatures differ'),
+            force_a = state_key(state_a),
+            force_b = state_key(state_b),
+            left_top = target_a.left_top,
+            initial_a = initial_a,
+            initial_b = initial_b,
+            reroll_a = reroll_a and reroll_a.signature or nil,
+            reroll_b = reroll_b and reroll_b.signature or nil,
+            generation_a = reroll_a and reroll_a.generation or nil,
+            generation_b = reroll_b and reroll_b.generation or nil
+        }
+    end
+
     function Public.probe_reveal_first_hungry_chest(force_name)
         local state = force_name and state_from_force_name(force_name) or expanse
         ensure_state_ready(state)
@@ -2390,7 +2568,8 @@ commands.add_command(
         end
         local target_removed = not (target.entity and target.entity.valid)
         local area = { { target.left_top.x, target.left_top.y }, { target.left_top.x + state.square_size, target.left_top.y + state.square_size } }
-        local natural_enemy_count = count_natural_enemy_entities(surface, area)
+        local natural_enemy_count = count_natural_enemy_entities(surface, area, state)
+        local cell_biter_count = count_tracked_cell_biters(state, surface, area)
         local a = math.floor(state.square_size * 0.5)
         local expansion_position = { x = target.left_top.x + a, y = target.left_top.y + a }
         local expected_invasion_candidate = expected_synced_invasion_candidate(state, expansion_position)
@@ -2422,7 +2601,124 @@ commands.add_command(
             after_schedule = after_schedule,
             expected_invasion_candidate = expected_invasion_candidate,
             invasion_candidate_blocked_by_water = invasion_candidate_blocked_by_water,
-            natural_enemy_count = natural_enemy_count
+            natural_enemy_count = natural_enemy_count,
+            cell_biter_count = cell_biter_count
+        }
+    end
+
+    local function prepare_cell_biter_probe_source(state, center)
+        local source_surface = game.surfaces[state.source_surface]
+        if not (source_surface and source_surface.valid) then
+            return false
+        end
+
+        source_surface.request_to_generate_chunks(center, 1)
+        source_surface.force_generate_chunk_requests()
+
+        local tile_name = prototypes.tile and prototypes.tile['grass-1'] and 'grass-1' or 'landfill'
+        local tiles = {}
+        for dx = -4, 4, 1 do
+            for dy = -4, 4, 1 do
+                tiles[#tiles + 1] = {
+                    name = tile_name,
+                    position = { math.floor(center.x) + dx, math.floor(center.y) + dy }
+                }
+            end
+        end
+        source_surface.set_tiles(tiles, true)
+        return true
+    end
+
+    function Public.probe_cell_open_biters(force_name)
+        local state = force_name and state_from_force_name(force_name) or expanse
+        ensure_state_ready(state)
+        local surface = game.surfaces[state.active_surface_index]
+        if not (surface and surface.valid) then
+            return { ok = false, error = 'missing active surface', force_name = state_key(state) }
+        end
+
+        local target = first_admin_open_target(state)
+        if not target then
+            return { ok = false, error = 'missing hungry chest target', force_name = state_key(state) }
+        end
+
+        local a = math.floor(state.square_size * 0.5)
+        local center = { x = target.left_top.x + a, y = target.left_top.y + a }
+        local source_prepared = prepare_cell_biter_probe_source(state, center)
+        local cell = Functions.ensure_meta_cell(state, target.left_top)
+        if cell then
+            cell.cell_biter_spawn = true
+            cell.cell_biter_position = { x = center.x, y = center.y }
+            cell.cell_biter_source_positions = {}
+            cell.cell_biter_camp = {
+                entities = {
+                    { name = 'biter-spawner', position = { x = center.x, y = center.y } },
+                    { name = 'small-worm-turret', position = { x = center.x + 3, y = center.y } }
+                },
+                unit_sources = {
+                    { x = center.x, y = center.y }
+                }
+            }
+        end
+
+        local config_snapshot = {
+            sync_invasions = state.sync_invasions,
+            spawner_spawn_base = state.spawner_spawn_base,
+            spawner_spawn_evolution_scale = state.spawner_spawn_evolution_scale
+        }
+        state.sync_invasions = true
+        state.spawner_spawn_base = 1
+        state.spawner_spawn_evolution_scale = 0
+
+        local area = { { target.left_top.x, target.left_top.y }, { target.left_top.x + state.square_size, target.left_top.y + state.square_size } }
+        local before_cell_biters = count_tracked_cell_biters(state, surface, area)
+        local before_natural_enemies = count_natural_enemy_entities(surface, area, state)
+        local removed_chests = 0
+        local results = { pcall(function()
+            return run_admin_open_batch(state, function()
+                local opened_cell, removed = open_admin_cell(state, target.left_top)
+                removed_chests = removed or 0
+                return opened_cell and 1 or 0
+            end)
+        end) }
+
+        state.sync_invasions = config_snapshot.sync_invasions
+        state.spawner_spawn_base = config_snapshot.spawner_spawn_base
+        state.spawner_spawn_evolution_scale = config_snapshot.spawner_spawn_evolution_scale
+
+        if not results[1] then
+            return {
+                ok = false,
+                error = tostring(results[2]),
+                force_name = state_key(state),
+                target = target.left_top,
+                source_prepared = source_prepared
+            }
+        end
+
+        local opened_count = results[2] or 0
+        local created_chests = results[4] or 0
+        local after_cell_biters = count_tracked_cell_biters(state, surface, area)
+        local natural_enemy_count = count_natural_enemy_entities(surface, area, state)
+        local spawned = after_cell_biters - before_cell_biters
+
+        return {
+            ok = opened_count == 1 and spawned > 0 and natural_enemy_count == 0,
+            error = (opened_count == 1 and spawned > 0 and natural_enemy_count == 0) and nil or 'cell open did not spawn tracked biters cleanly',
+            force_name = state_key(state),
+            surface_name = surface.name,
+            target = target.left_top,
+            center = center,
+            source_prepared = source_prepared,
+            opened = opened_count,
+            removed_chests = removed_chests,
+            created_chests = created_chests,
+            before_cell_biters = before_cell_biters,
+            after_cell_biters = after_cell_biters,
+            spawned = spawned,
+            before_natural_enemies = before_natural_enemies,
+            natural_enemy_count = natural_enemy_count,
+            tracker = state.cell_biter_tracker
         }
     end
 
@@ -3102,6 +3398,8 @@ commands.add_command(
             invasion_candidates = #(state.invasion_candidates or {}),
             invasion_candidate_cells = table_count(state.invasion_candidate_cells),
             invasion_tracker = shallow_copy(sync_invasion_tracker(state)),
+            cell_biter_units = table_count(state.cell_biter_units),
+            cell_biter_tracker = shallow_copy(state.cell_biter_tracker),
             next_mts_nauvis_cleanup_tick = state.next_mts_nauvis_cleanup_tick,
             last_mts_nauvis_cleanup_tick = state.last_mts_nauvis_cleanup_tick,
             last_mts_nauvis_cleanup_deleted = state.last_mts_nauvis_cleanup_deleted,
