@@ -488,13 +488,9 @@ local function state_players(state)
     return game.players
 end
 
--- True when the team owning this state has someone online. Standalone Expanse
--- still processes hungry chests even without connected players, which keeps
--- headless/server progression and release probes working.
+-- True when the team owning this state has someone online. Lets per-tick work that
+-- only matters to present players (the hungry-chest scan) skip idle/offline teams.
 local function state_has_connected_players(state)
-    if not (is_mts_active() and is_team_force_name(state_key(state))) then
-        return true
-    end
     local force = state_force(state)
     return force and force.valid and #force.connected_players > 0
 end

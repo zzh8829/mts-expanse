@@ -496,8 +496,8 @@ local function assert_team(force_name)
     local ok = remote.call('mts_expanse', 'reset', force_name)
     if ok ~= true then fail(force_name .. ' reset did not return true') end
 
-    local expected_surface = force_name .. '-expanse'
-    local expected_source = 'mts-expanse-meta-source'
+    local expected_surface = script.active_mods['space-age'] and force_name .. '-expanse' or force_name .. '-nauvis'
+    local expected_source = script.active_mods['space-age'] and 'mts-expanse-meta-source' or 'nauvis'
     local expected_nonorbit = force_name .. '-NonOrbit'
     local state = remote.call('mts_expanse', 'get_state', force_name)
     if type(state) ~= 'table' then fail(force_name .. ' state missing') end
@@ -581,8 +581,12 @@ script.on_nth_tick(30, function()
         end
         assert_vanilla_rocket_gating('team-1')
         assert_vanilla_rocket_gating('team-2')
-        local cleanup_surface1 = prepare_mts_nauvis_cleanup_surface('team-1')
-        local cleanup_surface2 = prepare_mts_nauvis_cleanup_surface('team-2')
+        local cleanup_surface1
+        local cleanup_surface2
+        if script.active_mods['space-age'] then
+            cleanup_surface1 = prepare_mts_nauvis_cleanup_surface('team-1')
+            cleanup_surface2 = prepare_mts_nauvis_cleanup_surface('team-2')
+        end
         completion_context = {
             team1 = team1,
             team2 = team2,
@@ -604,8 +608,10 @@ script.on_nth_tick(30, function()
         return
     end
     if not completion_context.cleanup_requested then
-        assert_mts_nauvis_cleanup('team-1')
-        assert_mts_nauvis_cleanup('team-2')
+        if script.active_mods['space-age'] then
+            assert_mts_nauvis_cleanup('team-1')
+            assert_mts_nauvis_cleanup('team-2')
+        end
         completion_context.cleanup_requested = true
         completion_context.cleanup_verify_tick = game.tick + 30
         return
@@ -614,10 +620,10 @@ script.on_nth_tick(30, function()
         return
     end
     if not completion_context.post_cleanup_probes_done then
-        if game.surfaces[completion_context.cleanup_surface1] then
+        if completion_context.cleanup_surface1 and game.surfaces[completion_context.cleanup_surface1] then
             fail('team-1 MTS Nauvis cleanup surface still exists: ' .. tostring(completion_context.cleanup_surface1))
         end
-        if game.surfaces[completion_context.cleanup_surface2] then
+        if completion_context.cleanup_surface2 and game.surfaces[completion_context.cleanup_surface2] then
             fail('team-2 MTS Nauvis cleanup surface still exists: ' .. tostring(completion_context.cleanup_surface2))
         end
         assert_hungry_chest_expanded(completion_context.completion1)

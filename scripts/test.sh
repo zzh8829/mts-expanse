@@ -373,61 +373,21 @@ local function assert_rocket_delivery()
     end
 end
 
-local function find_unlock_left_top(surface, position, cell_size)
-    local vectors = {{-1, 0}, {1, 0}, {0, 1}, {0, -1}}
-    for _, vector in pairs(vectors) do
-        local tile = surface.get_tile(position.x + vector[1], position.y + vector[2])
-        if tile.name == 'out-of-map' then
-            return {
-                x = tile.position.x - tile.position.x % cell_size,
-                y = tile.position.y - tile.position.y % cell_size
-            }
-        end
-    end
-    for dx = -3, 3, 1 do
-        for dy = -3, 3, 1 do
-            local tile = surface.get_tile(position.x + dx, position.y + dy)
-            if tile.name == 'out-of-map' then
-                return {
-                    x = tile.position.x - tile.position.x % cell_size,
-                    y = tile.position.y - tile.position.y % cell_size
-                }
-            end
-        end
-    end
-    return nil
-end
-
 local function fill_first_hungry_chest(label)
-    reveal_first_hungry_chest(label)
-    local state, surface, chest, container_info = first_hungry_chest(label)
-    local left_top = container_info.left_top
-    local point = chest.get_logistic_point(defines.logistic_member_index.logistic_container)
-    local section = point and point.get_section(1)
-    if not section then
-        error(label .. ': hungry chest request section missing')
-    end
-    local inventory = chest.get_inventory(defines.inventory.chest)
-    local inserted_any = false
-    for slot_index = 1, 256, 1 do
-        local ok, slot = pcall(function() return section.get_slot(slot_index) end)
-        if ok and slot and slot.value and slot.value.name and slot.min and slot.min > 0 then
-            local inserted = inventory.insert({name = slot.value.name, quality = slot.value.quality or 'normal', count = slot.min})
-            if inserted < slot.min then
-                error(label .. ': could not insert requested item ' .. slot.value.name)
-            end
-            inserted_any = true
-        end
-    end
-    if not inserted_any then
-        error(label .. ': no hungry chest requests found')
+    local probe = remote.call('mts_expanse', 'probe_complete_first_hungry_chest')
+    if type(probe) ~= 'table' or probe.ok ~= true then
+        error(
+            label .. ': hungry chest completion probe failed: before_size=' .. tostring(probe and probe.before_size) ..
+            ' after_size=' .. tostring(probe and probe.after_size) ..
+            ' tile=' .. tostring(probe and probe.tile) ..
+            ' error=' .. tostring(probe and probe.error)
+        )
     end
     return {
-        surface_name = surface.name,
-        left_top = left_top,
-        before_size = state.size or 0,
-        cell_size = state.settings.cell_size,
-        ready_tick = game.tick + 90
+        surface_name = probe.surface_name,
+        left_top = probe.left_top,
+        before_size = probe.before_size,
+        cell_size = probe.cell_size or 15
     }
 end
 
@@ -477,9 +437,6 @@ script.on_nth_tick(
             completion_context = fill_first_hungry_chest('after reset')
             return
         end
-        if game.tick < completion_context.ready_tick then
-            return
-	        end
         if not completion_context.post_completion_probes_done then
 		        assert_hungry_chest_expanded('after chest completion', completion_context)
 		        assert_admin_open_chest_lifecycle()
