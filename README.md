@@ -3,6 +3,8 @@
 Build a factory on a tiny island of land, feed the hungry chests, and expand
 one cell at a time.
 
+![MTS Expanse gameplay screenshot](https://raw.githubusercontent.com/zzh8829/mts-expanse/main/mts-expanse.png)
+
 MTS Expanse is a standalone Factorio 2.0 mod port of ComfyFactorio's Expanse
 scenario, rebuilt to work cleanly with Multi-Team Support. It turns map
 expansion into the central progression loop: every new chunk of land has a cost,
