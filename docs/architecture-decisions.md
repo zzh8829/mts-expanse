@@ -150,11 +150,16 @@ test for two real clients.
 The local play launcher is:
 
 ```bash
-MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+scripts/launch-play.sh
 ```
 
-It keeps the MTS Landing Pen enabled by default for manual play. Use
-`AUTO_CLAIM=true` only when an automated smoke run should bypass the join/create
-team menu.
+It uses the latest official installed `multi-team-support_*.zip` and keeps the
+MTS Landing Pen enabled by default for manual play. Use the patched local-MTS
+launcher only when an automated smoke run should bypass the join/create team
+menu:
+
+```bash
+MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play-patched-mts.sh
+```
 
 See `docs/multiplayer-testing.md` for the full multiplayer procedure.

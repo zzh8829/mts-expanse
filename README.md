@@ -70,31 +70,35 @@ scripts/test.sh
 ## Local Launch For Testing
 
 Use the local launcher when you want to test the MTS join/create-team menu in
-real Factorio clients:
+real Factorio clients. It uses your latest official `multi-team-support_*.zip`
+from Factorio's mods directory and the local MTS Expanse checkout:
 
 ```bash
 cd /Users/zihao/Repos/factorio/mts-expanse
-MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+scripts/launch-play.sh
 ```
+
+Set `MTS_MOD_ZIP=/path/to/multi-team-support_<version>.zip` only when you need
+to test against a specific official MTS zip.
 
 Choose one of these setups with `MOD_SETUP`:
 
 1. MTS + Expanse + vanilla:
 
    ```bash
-   MOD_SETUP=vanilla MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+   MOD_SETUP=vanilla scripts/launch-play.sh
    ```
 
 2. MTS + Expanse + vanilla + Quality:
 
    ```bash
-   MOD_SETUP=vanilla-quality MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+   MOD_SETUP=vanilla-quality scripts/launch-play.sh
    ```
 
 3. MTS + Expanse + vanilla + Elevated Rails + Space Age:
 
    ```bash
-   MOD_SETUP=space-age MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+   MOD_SETUP=space-age scripts/launch-play.sh
    ```
 
    Factorio requires Quality when Space Age is enabled, so this setup enables
@@ -103,7 +107,7 @@ Choose one of these setups with `MOD_SETUP`:
 4. MTS + Expanse + vanilla + Elevated Rails + Space Age + Quality:
 
    ```bash
-   MOD_SETUP=space-age-quality MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+   MOD_SETUP=space-age-quality scripts/launch-play.sh
    ```
 
 If `MOD_SETUP` is omitted, the launcher uses `vanilla-quality`.
@@ -111,7 +115,7 @@ If `MOD_SETUP` is omitted, the launcher uses `vanilla-quality`.
 To audit a setup without launching Factorio clients, add `DRY_RUN=true`:
 
 ```bash
-MOD_SETUP=vanilla DRY_RUN=true MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+MOD_SETUP=vanilla DRY_RUN=true scripts/launch-play.sh
 ```
 
 The dry run prints the setup label, effective optional mods, save path, and
@@ -127,18 +131,20 @@ unused MTS starter Nauvis surface (`team-N-nauvis`, or the Space Age
 Expanse source surface are kept. Disable this with the runtime-global setting
 `mts-expanse-cleanup-mts-nauvis=false`.
 
-For a faster automated smoke run that bypasses the Landing Pen menu:
+For a patched local-MTS smoke run that bypasses the Landing Pen menu, use the
+separate developer launcher with an unpacked MTS checkout:
 
 ```bash
-AUTO_CLAIM=true MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+MTS_MOD_DIR=/tmp/multi-team-support MOD_SETUP=vanilla scripts/launch-play-patched-mts.sh
 ```
 
-`AUTO_CLAIM=true` also enables the final player-state probe by default. For a
-manual menu test, only enable that probe after you are ready for Factorio's Lua
-console warning:
+`scripts/launch-play-patched-mts.sh` sets `AUTO_CLAIM=true` by default and
+copies the unpacked MTS checkout before patching Landing Pen startup flags. For
+a manual menu test with the official zip, only enable the final probe after you
+are ready for Factorio's Lua console warning:
 
 ```bash
-WAIT_FOR_CLIENTS=true MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+WAIT_FOR_CLIENTS=true scripts/launch-play.sh
 ```
 
 That probe uses `/sc` in the server console, so Factorio prints the standard

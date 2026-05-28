@@ -5,7 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 FACTORIO="${FACTORIO:-$HOME/Library/Application Support/Steam/steamapps/common/Factorio/factorio.app/Contents/MacOS/factorio}"
-MTS_MOD_DIR="${MTS_MOD_DIR:-/tmp/multi-team-support}"
+FACTORIO_MODS_DIR="${FACTORIO_MODS_DIR:-$HOME/Library/Application Support/factorio/mods}"
+MTS_MOD_ZIP="${MTS_MOD_ZIP:-}"
+MTS_MOD_DIR="${MTS_MOD_DIR:-}"
+MTS_DEV_MODE="${MTS_DEV_MODE:-false}"
 WORK_DIR="${WORK_DIR:-/tmp/mts-expanse-play}"
 PORT="${PORT:-34217}"
 CLIENT_A_NAME="${CLIENT_A_NAME:-MTSClientA}"
@@ -36,7 +39,10 @@ CLIENT_A_WRITE_DATA="$WORK_DIR/client-a/write-data"
 CLIENT_B_WRITE_DATA="$WORK_DIR/client-b/write-data"
 SERVER_SETTINGS="$WORK_DIR/server-settings.json"
 SAVE="$WORK_DIR/server/saves/mts-expanse-${MOD_SETUP}.zip"
-ACTIVE_MTS_MOD_DIR="$MTS_MOD_DIR"
+ACTIVE_MTS_MOD_SOURCE=""
+ACTIVE_MTS_MOD_LINK_NAME=""
+MTS_SOURCE_LABEL=""
+MTS_SOURCE_KIND=""
 
 case "$MOD_SETUP" in
     vanilla)
@@ -89,10 +95,104 @@ log() {
 log_setup_summary() {
     log "Using mod setup: $MOD_SETUP ($MOD_SETUP_LABEL)"
     log "Enabled optional mods: $MOD_SETUP_ENABLED_MODS"
+    if [[ -n "$MTS_SOURCE_LABEL" ]]; then
+        log "Using Multi-Team Support $MTS_VERSION from $MTS_SOURCE_LABEL"
+    fi
     log "Auto-claim Landing Pen: $AUTO_CLAIM"
     log "Wait for final player probe: $WAIT_FOR_CLIENTS"
     if [[ -n "$MOD_SETUP_NOTE" ]]; then
         log "$MOD_SETUP_NOTE"
+    fi
+}
+
+latest_installed_mts_zip() {
+    [[ -d "$FACTORIO_MODS_DIR" ]] || return 1
+    python3 - "$FACTORIO_MODS_DIR" <<'PY'
+import glob
+import os
+import re
+import sys
+
+paths = glob.glob(os.path.join(sys.argv[1], "multi-team-support_*.zip"))
+if not paths:
+    raise SystemExit(1)
+
+def version_key(path):
+    match = re.match(r"^multi-team-support_(.+)\.zip$", os.path.basename(path))
+    if not match:
+        return ()
+    parts = re.split(r"([0-9]+)", match.group(1))
+    return tuple(int(part) if part.isdigit() else part for part in parts)
+
+print(max(paths, key=version_key))
+PY
+}
+
+mts_version_from_zip_name() {
+    local base
+    base="$(basename "$1")"
+    if [[ "$base" =~ ^multi-team-support_([^/]+)\.zip$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    return 1
+}
+
+mts_version_from_dir() {
+    python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$1/info.json"
+}
+
+resolve_mts_mod() {
+    local source=""
+    if [[ "$MTS_DEV_MODE" == "true" ]]; then
+        source="${MTS_MOD_DIR:-$MTS_MOD_ZIP}"
+    else
+        source="$MTS_MOD_ZIP"
+        if [[ -z "$source" && -n "$MTS_MOD_DIR" && "$MTS_MOD_DIR" == *.zip ]]; then
+            source="$MTS_MOD_DIR"
+        fi
+    fi
+    if [[ -z "$source" ]]; then
+        source="$(latest_installed_mts_zip || true)"
+    fi
+
+    if [[ -z "$source" ]]; then
+        echo "Could not find Multi-Team Support. Install the official zip in $FACTORIO_MODS_DIR or set MTS_MOD_ZIP." >&2
+        exit 1
+    fi
+
+    if [[ -f "$source" && "$source" == *.zip ]]; then
+        if ! MTS_VERSION="$(mts_version_from_zip_name "$source")"; then
+            echo "MTS zip must be named multi-team-support_<version>.zip: $source" >&2
+            exit 1
+        fi
+        ACTIVE_MTS_MOD_SOURCE="$source"
+        ACTIVE_MTS_MOD_LINK_NAME="multi-team-support_$MTS_VERSION.zip"
+        MTS_SOURCE_LABEL="$source"
+        MTS_SOURCE_KIND="zip"
+    elif [[ -d "$source" ]]; then
+        if [[ "$MTS_DEV_MODE" != "true" ]]; then
+            echo "Unpacked Multi-Team Support dirs are only for patched local testing." >&2
+            echo "Use the official installed zip with scripts/launch-play.sh, or run scripts/launch-play-patched-mts.sh." >&2
+            exit 1
+        fi
+        if [[ ! -f "$source/info.json" ]]; then
+            echo "multi-team-support source not found at: $source" >&2
+            exit 1
+        fi
+        MTS_VERSION="$(mts_version_from_dir "$source")"
+        ACTIVE_MTS_MOD_SOURCE="$source"
+        ACTIVE_MTS_MOD_LINK_NAME="multi-team-support_$MTS_VERSION"
+        MTS_SOURCE_LABEL="$source"
+        MTS_SOURCE_KIND="dir"
+    else
+        echo "Multi-Team Support source must be an official zip for scripts/launch-play.sh: $source" >&2
+        exit 1
+    fi
+
+    if [[ "$AUTO_CLAIM" == "true" && "$MTS_DEV_MODE" != "true" ]]; then
+        echo "AUTO_CLAIM patches Multi-Team Support and is only available through scripts/launch-play-patched-mts.sh." >&2
+        exit 1
     fi
 }
 
@@ -192,16 +292,23 @@ EOF
 }
 
 prepare_mts_mod() {
-    ACTIVE_MTS_MOD_DIR="$MTS_MOD_DIR"
     if [[ "$AUTO_CLAIM" != "true" ]]; then
         return
     fi
+    if [[ "$MTS_SOURCE_KIND" != "dir" ]]; then
+        echo "AUTO_CLAIM requires an unpacked Multi-Team Support source." >&2
+        echo "Run MTS_MOD_DIR=/path/to/multi-team-support scripts/launch-play-patched-mts.sh." >&2
+        exit 1
+    fi
 
-    ACTIVE_MTS_MOD_DIR="$WORK_DIR/multi-team-support-autoclaim"
-    rm -rf "$ACTIVE_MTS_MOD_DIR"
-    cp -R "$MTS_MOD_DIR" "$ACTIVE_MTS_MOD_DIR"
+    local source_dir="$ACTIVE_MTS_MOD_SOURCE"
+    ACTIVE_MTS_MOD_SOURCE="$WORK_DIR/multi-team-support-autoclaim"
+    ACTIVE_MTS_MOD_LINK_NAME="multi-team-support_$MTS_VERSION"
+    rm -rf "$ACTIVE_MTS_MOD_SOURCE"
+    mkdir -p "$ACTIVE_MTS_MOD_SOURCE"
+    cp -R "$source_dir"/. "$ACTIVE_MTS_MOD_SOURCE"/
     LC_ALL=C LC_CTYPE=C LANG=C perl -0pi -e 's/landing_pen_enabled\s*=\s*true/landing_pen_enabled              = false/' \
-        "$ACTIVE_MTS_MOD_DIR/scripts/admin_flags.lua"
+        "$ACTIVE_MTS_MOD_SOURCE/scripts/admin_flags.lua"
 }
 
 backup_logs() {
@@ -343,6 +450,8 @@ set_factorio_username() {
     touch "$STEAM_PLAYER_DATA"
 }
 
+resolve_mts_mod
+
 if [[ "$DRY_RUN" == "true" ]]; then
     log_setup_summary
     log "Would create $MOD_SETUP_SAVE_LABEL play save at $SAVE"
@@ -354,11 +463,6 @@ if [[ ! -x "$FACTORIO" ]]; then
     echo "Factorio binary not found or not executable: $FACTORIO" >&2
     exit 1
 fi
-if [[ ! -f "$MTS_MOD_DIR/info.json" ]]; then
-    echo "multi-team-support source not found at: $MTS_MOD_DIR" >&2
-    exit 1
-fi
-MTS_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$MTS_MOD_DIR/info.json")"
 if [[ -z "$STEAM_PLAYER_DATA" ]]; then
     STEAM_PLAYER_DATA="$(detect_steam_player_data || true)"
 fi
@@ -383,9 +487,9 @@ if [[ "$AUTO_CLAIM" == "true" ]]; then
 else
     log "Using MTS Landing Pen menu; click Start a new team or join from the menu"
 fi
-rm -f "$MODS/$PACKAGE_NAME" "$MODS/multi-team-support_$MTS_VERSION"
+find "$MODS" -maxdepth 1 \( -name "${MOD_NAME}_*" -o -name "multi-team-support_*" \) -exec rm -rf {} + 2>/dev/null || true
 ln -s "$ROOT" "$MODS/$PACKAGE_NAME"
-ln -s "$ACTIVE_MTS_MOD_DIR" "$MODS/multi-team-support_$MTS_VERSION"
+ln -s "$ACTIVE_MTS_MOD_SOURCE" "$MODS/$ACTIVE_MTS_MOD_LINK_NAME"
 write_mod_list
 backup_logs
 

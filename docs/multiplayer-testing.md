@@ -180,8 +180,13 @@ Prefer the launch script:
 
 ```bash
 cd /Users/zihao/Repos/factorio/mts-expanse
-MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+scripts/launch-play.sh
 ```
+
+The player-facing launcher uses the latest official
+`multi-team-support_*.zip` from Factorio's mods directory and the local
+MTS Expanse checkout. Set `MTS_MOD_ZIP` only when testing a specific official
+MTS zip.
 
 Available launcher setups:
 
@@ -197,7 +202,7 @@ If `MOD_SETUP` is omitted, the launcher uses `vanilla-quality`.
 Audit the selected setup without opening clients:
 
 ```bash
-MOD_SETUP=vanilla DRY_RUN=true MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+MOD_SETUP=vanilla DRY_RUN=true scripts/launch-play.sh
 ```
 
 The dry run prints the setup label, effective optional mods, save path, and
@@ -206,7 +211,7 @@ generated `mod-list.json`.
 Example:
 
 ```bash
-MOD_SETUP=vanilla MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+MOD_SETUP=vanilla scripts/launch-play.sh
 ```
 
 That script starts a persistent local stack on `127.0.0.1:34217` in tmux
@@ -217,9 +222,14 @@ player-data username changes, confirms each client identity from the fresh
 server log before moving on, then leaves both clients in the MTS Landing Pen by
 default so the "Start a new team" and join-team menu is visible.
 
-Set `AUTO_CLAIM=true` only for automated smoke runs that should bypass the MTS
-Landing Pen and auto-claim separate teams. `AUTO_CLAIM=true` also enables the
-final server-side player probe by default.
+Use `scripts/launch-play-patched-mts.sh` only for automated smoke runs that
+should patch a local unpacked MTS checkout, bypass the MTS Landing Pen, and
+auto-claim separate teams. It sets `AUTO_CLAIM=true` by default, which also
+enables the final server-side player probe by default:
+
+```bash
+MTS_MOD_DIR=/tmp/multi-team-support MOD_SETUP=vanilla scripts/launch-play-patched-mts.sh
+```
 
 Once Expanse has moved a team onto `team-N-expanse`, the mod removes the unused
 MTS starter Nauvis surface for that team (`team-N-nauvis`, or `mts-nauvis-N`
@@ -239,7 +249,7 @@ Manual test steps after the clients open:
 Use this when you explicitly want the launcher to wait for that final probe:
 
 ```bash
-WAIT_FOR_CLIENTS=true MTS_MOD_DIR=/tmp/multi-team-support scripts/launch-play.sh
+WAIT_FOR_CLIENTS=true scripts/launch-play.sh
 ```
 
 The launch script creates a fresh save by default so stale broken local play
