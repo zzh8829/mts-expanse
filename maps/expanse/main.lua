@@ -201,75 +201,6 @@ local function planet_rng_key(surface_name)
     return h
 end
 
-local function promote_mts_team_host_info(info)
-    if not (is_mts_active() and type(info) == 'table' and info.is_occupied) then
-        return false
-    end
-    if not is_team_force_name(info.force_name) then
-        return false
-    end
-    local player_index = info.leader_player_index
-    if type(player_index) ~= 'number' then
-        return false
-    end
-    local player = game.get_player(player_index)
-    if not (player and player.valid) then
-        return false
-    end
-    local changed = false
-    local team_force = game.forces[info.force_name]
-    if team_force and team_force.valid and player.force.name ~= info.force_name then
-        local force_ok, force_err = pcall(function()
-            player.force = team_force
-        end)
-        if force_ok then
-            changed = true
-            log('[mts-expanse] restored MTS team host force: ' .. player.name .. ' (' .. info.force_name .. ')')
-        else
-            log('[mts-expanse] failed to restore MTS team host force for ' .. player.name .. ': ' .. tostring(force_err))
-        end
-    end
-    if not player.admin then
-        local ok, err = pcall(function()
-            player.admin = true
-        end)
-        if not ok then
-            log('[mts-expanse] failed to promote MTS team host ' .. player.name .. ' to admin: ' .. tostring(err))
-            return changed
-        end
-        changed = true
-        if player.connected then
-            player.print('You are now an admin because you host an MTS team.')
-        end
-        log('[mts-expanse] promoted MTS team host to admin: ' .. player.name .. ' (' .. info.force_name .. ')')
-    end
-    return changed
-end
-
-local function promote_mts_team_host(force_name)
-    if not (is_mts_active() and is_team_force_name(force_name)) then
-        return false
-    end
-    local ok, info = pcall(remote.call, MTS_INTERFACE, 'get_team_info', force_name)
-    if not ok then
-        return false
-    end
-    return promote_mts_team_host_info(info)
-end
-
-local function promote_all_mts_team_hosts()
-    if not is_mts_active() then
-        return
-    end
-    local ok, teams = pcall(remote.call, MTS_INTERFACE, 'get_team_list')
-    if not ok or type(teams) ~= 'table' then
-        return
-    end
-    for _, info in pairs(teams) do
-        promote_mts_team_host_info(info)
-    end
-end
-
 local function find_character_position(surface, position)
     return surface.find_non_colliding_position('character', position, 32, 0.5)
         or surface.find_non_colliding_position('character', position, 64, 1)
@@ -1505,9 +1436,6 @@ end
 
 local function on_player_joined_game(event)
     local player = game.players[event.player_index]
-    if player then
-        promote_mts_team_host(player.force.name)
-    end
     local state = state_from_player(player)
     if not state then
         create_button(player)
@@ -1525,29 +1453,6 @@ local function on_player_joined_game(event)
     end
 
     create_button(player)
-end
-
-local function on_player_changed_force(event)
-    if not is_mts_active() then
-        return
-    end
-    local player = game.get_player(event.player_index)
-    if not player or not player.valid or not is_team_force_name(player.force.name) then
-        return
-    end
-    local state = ensure_team_state(player.force.name)
-    -- Build the team's gameplay surface now, synchronously. on_player_changed_force
-    -- fires from inside MTS's claim_slot (when player.force is set) BEFORE MTS runs its
-    -- spawn teleport, so the surface exists by name when MTS's setup_player_surface
-    -- looks it up -- MTS then spawns the player directly onto the Expanse world rather
-    -- than a raw Nauvis variant. No relocation, no flash.
-    ensure_state_ready(state)
-    expanse.pending_player_teleports[player.index] = {
-        force_name = state_key(state),
-        tick = game.tick + 5
-    }
-    schedule_mts_nauvis_cleanup(state, 180)
-    promote_mts_team_host(player.force.name)
 end
 
 local function on_pre_player_left_game(event)
@@ -1571,15 +1476,14 @@ local function on_pre_player_left_game(event)
     end
 end
 
--- ── MTS welcome-screen tab ───────────────────────────────────────────
--- Under MTS, the Expanse map intro lives in a tab on MTS's unified welcome screen
--- instead of the standalone Comfy "Map Info" popup. The on_welcome_tab_built event
--- id is dynamic (script.generate_event_name in MTS), so we fetch it via remote.call
--- where that's legal (on_init / on_configuration_changed), cache it in storage, and
--- (re-)register the handler from on_init / on_load / on_configuration_changed. That is
--- the multiplayer-safe pattern: no remote.call in on_load, and every peer registers the
--- same handler for the same id right after load. Degrades cleanly on an older MTS that
--- lacks the interface (pcall + nil id -> no tab, no error).
+-- ── MTS event integration ────────────────────────────────────────────
+-- Expanse consumes several mts-v1 custom events (welcome tab, team join, team
+-- created). Their ids are dynamic (script.generate_event_name in MTS), so we fetch
+-- them via remote.call where that's legal (on_init / on_configuration_changed), cache
+-- them in storage, and (re-)register the handlers from on_init / on_load /
+-- on_configuration_changed. Multiplayer-safe: no remote.call in on_load, and every peer
+-- registers the same handlers for the same ids right after load. Degrades cleanly on an
+-- older MTS that lacks an event (pcall + nil id -> that handler simply isn't registered).
 local WELCOME_TAB_NAME = 'mts-expanse'
 
 local function draw_welcome_tab(element)
@@ -1627,15 +1531,50 @@ local function on_mts_welcome_tab_built(event)
     draw_welcome_tab(event.element)
 end
 
-local function register_welcome_handler()
-    local id = storage.expanse_mts_welcome_event_id
-    if id then
-        script.on_event(id, on_mts_welcome_tab_built)
+-- A player joined a team (including the initial claim). MTS raises this synchronously
+-- while it sets the player's force -- i.e. BEFORE its spawn teleport -- so building the
+-- surface here means MTS spawns the player straight onto the Expanse world (no flash).
+local function on_mts_player_joined_team(event)
+    local player = game.get_player(event.player_index)
+    if not (player and player.valid) then
+        return
+    end
+    local force_name = event.force_name
+    if not is_team_force_name(force_name) then
+        return
+    end
+    local state = ensure_team_state(force_name)
+    ensure_state_ready(state)
+    expanse.pending_player_teleports[player.index] = {
+        force_name = state_key(state),
+        tick = game.tick + 5
+    }
+    schedule_mts_nauvis_cleanup(state, 180)
+end
+
+-- mts-v1 event name -> handler. Keys are the exact names passed to get_event_id.
+local MTS_EVENT_HANDLERS = {
+    on_welcome_tab_built  = on_mts_welcome_tab_built,
+    on_player_joined_team = on_mts_player_joined_team,
+}
+
+-- on_init / on_load / on_configuration_changed. Reads cached ids from storage and
+-- (re-)registers every handler -- no remote.call, so it is safe in on_load.
+local function register_mts_event_handlers()
+    local ids = storage.expanse_mts_event_ids
+    if not ids then
+        return
+    end
+    for name, handler in pairs(MTS_EVENT_HANDLERS) do
+        local id = ids[name]
+        if id then
+            script.on_event(id, handler)
+        end
     end
 end
 
 -- Call only from on_init / on_configuration_changed (remote.call is legal there).
-local function setup_mts_welcome()
+local function setup_mts_events()
     if not is_mts_active() then
         return
     end
@@ -1643,11 +1582,15 @@ local function setup_mts_welcome()
     Map_info.call_map_info_on_join(false)
     pcall(remote.call, MTS_INTERFACE, 'register_welcome_tab',
         { name = WELCOME_TAB_NAME, caption = 'Expanse', order = 'a' })
-    local ok, id = pcall(remote.call, MTS_INTERFACE, 'get_event_id', 'on_welcome_tab_built')
-    if ok and type(id) == 'number' then
-        storage.expanse_mts_welcome_event_id = id
+    local ids = {}
+    for name in pairs(MTS_EVENT_HANDLERS) do
+        local ok, id = pcall(remote.call, MTS_INTERFACE, 'get_event_id', name)
+        if ok and type(id) == 'number' then
+            ids[name] = id
+        end
     end
-    register_welcome_handler()
+    storage.expanse_mts_event_ids = ids
+    register_mts_event_handlers()
 end
 
 local function on_init()
@@ -1661,11 +1604,10 @@ local function on_init()
     apply_world_settings()
     if is_mts_active() then
         set_source_surface(expanse)
-        promote_all_mts_team_hosts()
     else
         reset(expanse)
     end
-    setup_mts_welcome()
+    setup_mts_events()
 end
 
 local function map_reset(event)
@@ -1698,8 +1640,7 @@ local function on_configuration_changed(_event)
     if SpaceMissions.enabled() then
         script.raise_event(expanse.events.mission_gui_update, {})
     end
-    promote_all_mts_team_hosts()
-    setup_mts_welcome()
+    setup_mts_events()
 end
 
 local function on_runtime_mod_setting_changed(event)
@@ -1827,7 +1768,6 @@ local function process_state_tick(state)
 end
 
 local function on_tick()
-    promote_all_mts_team_hosts()
     process_pending_player_teleports()
     for _, state in iter_states() do
         process_state_tick(state)
@@ -3584,7 +3524,7 @@ commands.add_command(
 
 Event.on_init(on_init)
 Event.on_configuration_changed(on_configuration_changed)
-Event.on_load(register_welcome_handler)
+Event.on_load(register_mts_event_handlers)
 Event.on_nth_tick(60, on_tick)
 Event.add(defines.events.on_chunk_generated, on_chunk_generated)
 Event.add(defines.events.on_area_cloned, on_area_cloned)
@@ -3594,7 +3534,6 @@ Event.add(defines.events.on_gui_closed, on_gui_closed)
 Event.add(defines.events.on_gui_opened, on_gui_opened)
 Event.add(defines.events.on_gui_click, on_gui_click)
 Event.add(defines.events.on_player_joined_game, on_player_joined_game)
-Event.add(defines.events.on_player_changed_force, on_player_changed_force)
 Event.add(defines.events.on_pre_player_left_game, on_pre_player_left_game)
 Event.add(defines.events.on_pre_player_mined_item, infini_resource)
 Event.add(defines.events.on_robot_pre_mined, infini_resource)

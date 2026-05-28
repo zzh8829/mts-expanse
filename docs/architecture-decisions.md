@@ -125,13 +125,15 @@ a full manual launch sequence.
 
 ## MTS Host Handling
 
-Any MTS team host should be a Factorio admin for local testing and team
-administration. The mod also reconciles a host's Factorio force if MTS records
-them as a team leader but the engine has them on the wrong force after a join or
-restart.
+MTS owns team membership and force assignment. Expanse does not promote team
+hosts to Factorio admin and does not reassign a player's force -- doing either
+would overstep MTS (and granting server admin to anyone who starts a team is a
+security problem). The `/expanse-*` admin/debug commands require real Factorio
+admin, like any other admin command.
 
-This is not an admin-list replacement for public servers. It is a runtime guard
-for the MTS team-host flow.
+When a player joins a team, Expanse reacts to MTS's `on_player_joined_team`
+event and builds that team's surface; it relies on MTS having already placed the
+player on the correct force.
 
 ## Verification Baseline
 
