@@ -1,4 +1,10 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.5
+Date: 28. 05. 2026
+  Bugfixes:
+    - Kept hungry-chest scans idle-aware in real play while making headless tests complete chests through explicit probes.
+    - Updated MTS compatibility probes for Multi-Team Support 0.4.43 vanilla surface naming.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.4
 Date: 28. 05. 2026
   Features:
