@@ -1,4 +1,26 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.6
+Date: 29. 05. 2026
+  Features:
+    - Per-team milestones via Multi-Team Support: first/fastest to unlock Expanse cells
+      (1st, 10th ... 10000th) and to mine the infini tree / rock (100 ... 100000 times),
+      shown in the Team Awards window.
+    - An on-surface overlay above each team's spawn cell shows the team (colour + leader),
+      cells unlocked, and the next biter invasion -- readable by the team and by spectators.
+    - Mined wood and the rock's ore and stone are registered in production statistics, so
+      they show per team in the native Production GUI (and the MTS Ores awards/columns).
+  Changes:
+    - Hungry chests are now fully independent per team: rerolling or feeding one team's
+      chest never changes another team's chest that they have not opened yet.
+    - Cross-team parity: tree-regrowth species and rock yields (ore type + amount) are
+      deterministic by shared seed, position, and mine index, so every team's Nth tree and
+      Nth rock match. Bonus reroll tokens and depleted-stone uranium are position-keyed too.
+    - Destroying the rock with a tank (or any team weapon) now counts toward the mining
+      milestone, like hand or robot mining; biter kills do not.
+    - MTS integration (welcome tab, team-settings tab, milestones) self-heals on load.
+  Info:
+    - Requires Multi-Team Support 0.4.44+ for the milestone interface.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.5
 Date: 28. 05. 2026
   Bugfixes:

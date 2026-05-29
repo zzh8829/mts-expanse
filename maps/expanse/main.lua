@@ -21,7 +21,6 @@ local Gui = require 'utils.gui'
 local format_number = require 'util'.format_number
 local Autostash = require 'modules.autostash'
 local FT = require 'utils.functions.flying_texts'
-local Raffle = require 'utils.math.raffle'
 
 local expanse = {
     events = {
@@ -865,6 +864,8 @@ reset = function(state)
     state.reset_tick = game.tick
     state.tree = nil
     state.rock = nil
+    state.tree_mined_count = 0
+    state.rock_mined_count = 0
     state.acid_tank = nil
     state.biome_offset = expanse.shared_biome_offset
     state.tiered_specials = {
@@ -1082,13 +1083,27 @@ end
 
 local function on_resource_depleted(event)
     local ore = event.entity
-    if ore and ore.valid then
-        local distance = math.sqrt(ore.position.x ^ 2 + ore.position.y ^ 2)
-        if ore.name == 'stone' and distance > 100 then
-            if math.random(1, 4) == 1 then
-                ore.surface.create_entity({ name = 'uranium-ore', position = ore.position, amount = 200 + math.floor(distance) * math.random(1, 3) })
-            end
-        end
+    if not (ore and ore.valid) then
+        return
+    end
+    local distance = math.sqrt(ore.position.x ^ 2 + ore.position.y ^ 2)
+    if ore.name ~= 'stone' or distance <= 100 then
+        return
+    end
+    -- Keyed by the depleted tile's position so every team's identical world turns the same
+    -- depleted stone into the same uranium (chance + amount). Falls back to the global RNG
+    -- only off an Expanse surface, where there's no shared seed to key on.
+    local state = state_from_surface(ore.surface)
+    local roll, bonus
+    if state then
+        roll  = Functions.cell_random_int(state, ore.position, 9500, 4)
+        bonus = Functions.cell_random_int(state, ore.position, 9501, 3)
+    else
+        roll  = math.random(1, 4)
+        bonus = math.random(1, 3)
+    end
+    if roll == 1 then
+        ore.surface.create_entity({ name = 'uranium-ore', position = ore.position, amount = 200 + math.floor(distance) * bonus })
     end
 end
 
@@ -1248,6 +1263,11 @@ local function handle_completed_container(state, expansion_position, player)
     end
     state_print(state, { 'expanse.tile_unlock', unlocker, { 'expanse.gps', math.floor(expansion_position.x), math.floor(expansion_position.y), surface.name } })
     state.size = (state.size or 1) + 1
+    -- Report cells unlocked by play (excludes the spawn starting cell) so MTS can track
+    -- first/fastest "Expanse cells unlocked" milestones across teams.
+    if is_mts_active() and is_team_force_name(state_key(state)) then
+        pcall(remote.call, MTS_INTERFACE, 'report_milestone', state_key(state), 'expanse-cells', state.size - 1)
+    end
     state.invasion_candidates = state.invasion_candidates or {}
     state.invasion_candidate_cells = state.invasion_candidate_cells or {}
     local tracker = invasion_tracker(state)
@@ -1343,7 +1363,50 @@ local function uranium_mining(entity, state)
     end
 end
 
-local function infini_rock(entity, state)
+-- Milestones for *mining actions* (how many times the infini tree / rock was mined), as
+-- opposed to the raw wood/ore quantities -- those are tracked via native production stats.
+local MINE_MILESTONE = { tree = 'expanse-tree-mined', rock = 'expanse-rock-mined' }
+local MINE_THRESHOLDS = { 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000 }
+
+-- Count one tree/rock mining action for this team and report the running total to MTS.
+local function count_resource_mine(state, kind)
+    local field = kind == 'tree' and 'tree_mined_count' or 'rock_mined_count'
+    local n = (state[field] or 0) + 1
+    state[field] = n
+    if is_mts_active() then
+        local fname = state_key(state)
+        if is_team_force_name(fname) then
+            pcall(remote.call, MTS_INTERFACE, 'report_milestone', fname, MINE_MILESTONE[kind], n)
+        end
+    end
+end
+
+-- Deterministic weighted pick keyed by the shared seed + position + salt (via
+-- Functions.cell_random_int), so every team gets the same item for the same salt. Tree/rock
+-- rolls must be identical across teams for fairness; drawing from the interleaved global RNG
+-- made them diverge. Keys are sorted so the walk order is stable across peers/saves
+-- (pairs() iteration order is not deterministic).
+local function deterministic_weighted(state, position, salt, weights)
+    local keys, total = {}, 0
+    for name, w in pairs(weights) do
+        if w and w > 0 then keys[#keys + 1] = name end
+    end
+    if #keys == 0 then return nil end
+    table.sort(keys)
+    for _, name in ipairs(keys) do total = total + weights[name] end
+    local roll = Functions.cell_random_int(state, position, salt, total)
+    local acc = 0
+    for _, name in ipairs(keys) do
+        acc = acc + weights[name]
+        if roll <= acc then return name end
+    end
+    return keys[#keys]
+end
+
+-- mined: true when this call comes from an actual mining action (player/robot), false for a
+-- death or a scripted regrow -- so only mining actions count toward the milestone, while the
+-- ore is always registered as produced.
+local function infini_rock(entity, state, mined)
     if entity.type ~= 'simple-entity' then
         return
     end
@@ -1360,8 +1423,18 @@ local function infini_rock(entity, state)
     local a = math.floor(state.square_size * 0.5)
     if entity.position.x == a + 4 and entity.position.y == a - 4 then
         local newrock = entity.surface.create_entity({ name = 'big-rock', position = { a + 4, a - 4 } })
-        local roll = Raffle.raffle(inf_ores)
-        entity.surface.spill_item_stack({position = entity.position, stack = { name = roll, count = math.random(80, 160) }, enable_looted = true, allow_belts = true})
+        -- Advance the mine index before rolling so the Nth mine's yield is keyed by N (and so
+        -- identical across teams). Deaths / scripted regrows reuse the current index.
+        if mined then count_resource_mine(state, 'rock') end
+        local index = state.rock_mined_count or 0
+        local roll = deterministic_weighted(state, entity.position, index * 2, inf_ores)
+        local amount = 80 + Functions.cell_random_int(state, entity.position, index * 2 + 1, 81) - 1
+        if roll then
+            entity.surface.spill_item_stack({position = entity.position, stack = { name = roll, count = amount }, enable_looted = true, allow_belts = true})
+            -- Register the rock's ore as produced so it shows in the native per-team Production GUI.
+            local stats = state_force(state).get_item_production_statistics(entity.surface)
+            if stats then stats.on_flow(roll, amount) end
+        end
         uranium_mining(entity, state)
         if newrock then
             state.rock = script.register_on_object_destroyed(newrock)
@@ -1399,7 +1472,9 @@ local function infini_tree(state)
     local surface = game.surfaces[state.active_surface_index]
     local position = {a - 4, a + 4}
 
-    local newtree = surface.create_entity({ name = Raffle.raffle(trees), position = position, }) --register_plant = true ?
+    -- Roll the regrown tree deterministically by mine index so every team's Nth tree matches.
+    local tree_name = deterministic_weighted(state, { x = a - 4, y = a + 4 }, state.tree_mined_count or 0, trees)
+    local newtree = tree_name and surface.create_entity({ name = tree_name, position = position })
     if newtree then
         state.tree = script.register_on_object_destroyed(newtree)
         register_state_object(state, state.tree)
@@ -1415,8 +1490,20 @@ local function infini_resource(event)
     if not state then
         return
     end
+    -- A mining action is a player/robot pre-mine. For the rock (its ore spills on ANY
+    -- destruction) a team-caused kill counts too -- e.g. blasting or ramming it with a tank.
+    -- A biter or cause-less death does NOT count: it isn't the team harvesting, and counting
+    -- it would desync the per-team yield index (biters hit each team at different times).
+    local is_premine = event.name ~= defines.events.on_entity_died
+    local team_kill = false
+    if not is_premine then
+        local cause = event.cause
+        team_kill = (cause and cause.valid and cause.force and cause.force.name ~= 'enemy') or false
+    end
     if entity.name == 'big-rock' then
-        infini_rock(entity, state)
+        infini_rock(entity, state, is_premine or team_kill)
+    elseif is_premine and (entity.type == 'tree' or entity.type == 'plant') then
+        count_resource_mine(state, 'tree')
     end
 end
 
@@ -1439,6 +1526,36 @@ local function infini_resource2(event)
     elseif event.registration_number == state.rock then
         local a = math.floor(state.square_size * 0.5)
         infini_rock({type = 'simple-entity', position = {x = a + 4, y = a - 4 }, surface = game.surfaces[state.active_surface_index]}, state)
+    end
+end
+
+-- Register the items a mined infini tree / rock yields into the team's production stats so
+-- the native (and MTS) Production GUI tracks them. Hand/robot mining of trees and the
+-- simple-entity rock does NOT count toward production stats on its own, so we do it
+-- explicitly: tree wood and the rock's vanilla stone. (The rock's scripted ore spill is
+-- registered separately in infini_rock.)
+local function track_mined_production(event)
+    local entity = event.entity
+    if not (entity and entity.valid) then
+        return
+    end
+    if not (entity.name == 'big-rock' or entity.type == 'tree' or entity.type == 'plant') then
+        return
+    end
+    local buffer = event.buffer
+    if not (buffer and buffer.valid) then
+        return
+    end
+    local state = state_from_surface(entity.surface)
+    if not state then
+        return
+    end
+    local stats = state_force(state).get_item_production_statistics(entity.surface)
+    if not stats then
+        return
+    end
+    for _, item in pairs(buffer.get_contents()) do
+        stats.on_flow(item.name, item.count)
     end
 end
 
@@ -1617,7 +1734,15 @@ local function register_mts_event_handlers()
 end
 
 -- Call only from on_init / on_configuration_changed (remote.call is legal there).
+-- Set once per session. setup_mts_events registers the welcome/team tabs and milestones via
+-- remote.call (legal in on_init/on_configuration_changed/on_tick, NOT on_load). Re-running it
+-- from on_tick after a plain reload self-heals registration -- milestones added since the
+-- save's last on_init/on_configuration_changed get registered without a new game or a version
+-- bump. All the registrations are idempotent (they overwrite registry entries).
+local mts_setup_done = false
+
 local function setup_mts_events()
+    mts_setup_done = true
     if not is_mts_active() then
         return
     end
@@ -1627,6 +1752,30 @@ local function setup_mts_events()
         { name = EXPANSE_TAB_NAME, caption = 'Expanse', order = 'a' })
     pcall(remote.call, MTS_INTERFACE, 'register_team_tab',
         { name = EXPANSE_TAB_NAME, caption = 'Expanse', order = 'm' })
+    -- Per-team "Expanse cells unlocked" milestones: first-only for the 1st cell, then
+    -- first + fastest at each larger threshold. Reported from handle_completed_container.
+    pcall(remote.call, MTS_INTERFACE, 'register_milestone', {
+        category        = 'expanse-cells',
+        verb            = 'unlock',
+        noun            = 'Expanse cell',
+        first_threshold = 1,
+        thresholds      = { 10, 50, 100, 250, 500, 1000, 2000, 5000, 10000 },
+    })
+    -- Mining-action milestones (how many times the infini tree / rock was mined). No
+    -- first_threshold -- a single mine is too trivial; the race starts at 100. Reported
+    -- from count_resource_mine.
+    pcall(remote.call, MTS_INTERFACE, 'register_milestone', {
+        category   = 'expanse-tree-mined',
+        verb       = 'mine',
+        noun       = 'tree',
+        thresholds = MINE_THRESHOLDS,
+    })
+    pcall(remote.call, MTS_INTERFACE, 'register_milestone', {
+        category   = 'expanse-rock-mined',
+        verb       = 'mine',
+        noun       = 'rock',
+        thresholds = MINE_THRESHOLDS,
+    })
     local ids = {}
     for name in pairs(MTS_EVENT_HANDLERS) do
         local ok, id = pcall(remote.call, MTS_INTERFACE, 'get_event_id', name)
@@ -1793,10 +1942,108 @@ local function process_state_schedule(state)
     end
 end
 
+-- Capitalised base planet name for the overlay's first line ("...'s Nauvis"). Falls back
+-- to "Nauvis" when the surface name can't be reduced to a shared planet.
+local function overlay_location_name(surface_name)
+    local base = base_planet_name(surface_name or '')
+    if base and #base > 0 then
+        return base:sub(1, 1):upper() .. base:sub(2)
+    end
+    return 'Nauvis'
+end
+
+-- Bump when the line positions/scales below change, so overlays saved under an older
+-- layout get rebuilt instead of lingering with stale geometry.
+local OVERLAY_LAYOUT = 2
+
+-- Tear down every overlay object for a state (the old single object + the line table).
+local function destroy_overlay(state)
+    if state.invasion_overlay then
+        if state.invasion_overlay.valid then state.invasion_overlay.destroy() end
+        state.invasion_overlay = nil
+    end
+    local o = state.overlay
+    if o then
+        for k, obj in pairs(o) do
+            if obj and obj.valid then obj.destroy() end
+            o[k] = nil
+        end
+    end
+end
+
+-- Draw, or update the text of, one centered overlay line; returns the live object.
+local function set_overlay_line(obj, surface, x, y, scale, caption)
+    if obj and obj.valid then
+        obj.text = caption
+        return obj
+    end
+    return rendering.draw_text {
+        text = caption,
+        surface = surface,
+        target = { x = x, y = y },
+        color = { r = 1, g = 1, b = 1 },   -- white: readable on both desert and grass
+        scale = scale,
+        alignment = 'center',
+        vertical_alignment = 'bottom',
+        use_rich_text = true,              -- needed for the team line's colour tags
+    }
+end
+
+-- On-surface overlay above the spawn cell, drawn as separate stacked lines (top -> bottom):
+--   <Team tag> [leader]'s <Planet>   (MTS only -- team colour + live leader, larger font)
+--   Cells unlocked: <n>              (cells unlocked through play = size - 1)
+--   Next biter invasion: x / y, z groups
+-- Separate objects (vs one multi-line string) give per-line font sizes and reliable line
+-- breaks. Rendered on the surface (no force filter) so the team AND any spectator can read
+-- it without opening a GUI; refreshed at 1 Hz from process_state_tick so all three stay
+-- current. Under MTS we suppress MTS's own spawn label so this replaces it.
+local function update_overlay(state)
+    local surface = state.active_surface_index and game.surfaces[state.active_surface_index]
+    if not (surface and surface.valid) then
+        return
+    end
+    if state.overlay_layout ~= OVERLAY_LAYOUT then
+        destroy_overlay(state)
+        state.overlay_layout = OVERLAY_LAYOUT
+    end
+    -- Suppress MTS's own spawn label. Keyed by surface name (not a sticky bool) so a surface
+    -- reset -- which creates a freshly-named surface MTS would re-label -- gets re-suppressed.
+    if is_mts_active() and state.mts_label_suppressed_surface ~= surface.name then
+        state.mts_label_suppressed_surface = surface.name
+        pcall(remote.call, MTS_INTERFACE, 'set_spawn_label_enabled', surface.name, false)
+    end
+
+    state.overlay = state.overlay or {}
+    local o        = state.overlay
+    local x        = (state.square_size or 15) * 0.5
+    local invasion = Functions.invasion_numbers(state)
+    local cells    = math.max(0, (state.size or 1) - 1)
+
+    o.invasion = set_overlay_line(o.invasion, surface, x, -2.0, 1.5,
+        { 'expanse.stats_attack', #(state.invasion_candidates or {}),
+          invasion.candidates, invasion.groups })
+    o.cells = set_overlay_line(o.cells, surface, x, -3.6, 1.5,
+        { 'expanse.overlay_cells', cells })
+
+    if is_mts_active() then
+        local ok, label = pcall(remote.call, MTS_INTERFACE, 'get_team_label', state_key(state))
+        if ok and type(label) == 'string' then
+            o.team = set_overlay_line(o.team, surface, x, -5.5, 2.2,
+                { '', label, "'s ", overlay_location_name(surface.name) })
+            return
+        end
+    end
+    if o.team and o.team.valid then
+        o.team.destroy()
+        o.team = nil
+    end
+end
+
 local function process_state_tick(state)
     if not state.active_surface_index or not game.surfaces[state.active_surface_index] then
         return
     end
+    update_overlay(state)
     if state.next_mts_nauvis_cleanup_tick and game.tick >= state.next_mts_nauvis_cleanup_tick then
         cleanup_mts_nauvis_surfaces(state)
     end
@@ -1818,6 +2065,11 @@ local function process_state_tick(state)
 end
 
 local function on_tick()
+    -- Self-heal MTS registration after a plain reload (on_load can't remote.call). Runs once
+    -- per session; on_init / on_configuration_changed already set the flag on those paths.
+    if not mts_setup_done then
+        setup_mts_events()
+    end
     process_pending_player_teleports()
     for _, state in iter_states() do
         process_state_tick(state)
@@ -2532,35 +2784,37 @@ commands.add_command(
             return { ok = false, error = 'missing matching second team hungry chest target', left_top = target_a.left_top }
         end
 
+        -- Team A reveals + rerolls FIRST, and only then does team B reveal the same cell.
+        -- Rerolls are per-team now, so A's reroll must not leak into B: B still sees the
+        -- canonical generation-0 offer, identical to what A first saw. (Name kept for the
+        -- test harness; it now verifies independence rather than the old shared behavior.)
         local container_a = reveal_hungry_chest_target(state_a, target_a)
-        local container_b = reveal_hungry_chest_target(state_b, target_b)
-        if not (container_a and container_b) then
-            return { ok = false, error = 'failed to reveal matching hungry chests' }
+        if not container_a then
+            return { ok = false, error = 'failed to reveal team A hungry chest' }
         end
-
         local initial_a = price_signature(container_a)
-        local initial_b = price_signature(container_b)
         local reroll_a, err_a = reroll_hungry_chest_target(state_a, target_a)
-        local reroll_b, err_b = reroll_hungry_chest_target(state_b, target_b)
+
+        local container_b = reveal_hungry_chest_target(state_b, target_b)
+        if not container_b then
+            return { ok = false, error = 'failed to reveal team B hungry chest' }
+        end
+        local initial_b = price_signature(container_b)
+
         local ok = reroll_a ~= nil
-            and reroll_b ~= nil
-            and initial_a == initial_b
-            and reroll_a.signature == reroll_b.signature
-            and reroll_a.signature ~= initial_a
-            and reroll_a.generation == reroll_b.generation
+            and reroll_a.signature ~= initial_a   -- A's reroll changed A's own offer
+            and initial_b == initial_a            -- B is unaffected: still the original offer
 
         return {
             ok = ok,
-            error = ok and nil or (err_a or err_b or 'synced reroll signatures differ'),
+            error = ok and nil or (err_a or 'team A reroll leaked into team B offer'),
             force_a = state_key(state_a),
             force_b = state_key(state_b),
             left_top = target_a.left_top,
             initial_a = initial_a,
             initial_b = initial_b,
             reroll_a = reroll_a and reroll_a.signature or nil,
-            reroll_b = reroll_b and reroll_b.signature or nil,
-            generation_a = reroll_a and reroll_a.generation or nil,
-            generation_b = reroll_b and reroll_b.generation or nil
+            generation_a = reroll_a and reroll_a.generation or nil
         }
     end
 
@@ -3587,6 +3841,8 @@ Event.add(defines.events.on_player_joined_game, on_player_joined_game)
 Event.add(defines.events.on_pre_player_left_game, on_pre_player_left_game)
 Event.add(defines.events.on_pre_player_mined_item, infini_resource)
 Event.add(defines.events.on_robot_pre_mined, infini_resource)
+Event.add(defines.events.on_player_mined_entity, track_mined_production)
+Event.add(defines.events.on_robot_mined_entity, track_mined_production)
 Event.add(defines.events.on_research_finished, on_research_finished)
 Event.add(defines.events.on_rocket_launch_ordered, on_rocket_launch_ordered)
 Event.add(defines.events.on_cargo_pod_finished_ascending, on_cargo_pod_finished_ascending)
