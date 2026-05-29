@@ -1248,6 +1248,11 @@ local function handle_completed_container(state, expansion_position, player)
     end
     state_print(state, { 'expanse.tile_unlock', unlocker, { 'expanse.gps', math.floor(expansion_position.x), math.floor(expansion_position.y), surface.name } })
     state.size = (state.size or 1) + 1
+    -- Report cells unlocked by play (excludes the spawn starting cell) so MTS can track
+    -- first/fastest "Expanse cells unlocked" milestones across teams.
+    if is_mts_active() and is_team_force_name(state_key(state)) then
+        pcall(remote.call, MTS_INTERFACE, 'report_milestone', state_key(state), 'expanse-cells', state.size - 1)
+    end
     state.invasion_candidates = state.invasion_candidates or {}
     state.invasion_candidate_cells = state.invasion_candidate_cells or {}
     local tracker = invasion_tracker(state)
@@ -1627,6 +1632,15 @@ local function setup_mts_events()
         { name = EXPANSE_TAB_NAME, caption = 'Expanse', order = 'a' })
     pcall(remote.call, MTS_INTERFACE, 'register_team_tab',
         { name = EXPANSE_TAB_NAME, caption = 'Expanse', order = 'm' })
+    -- Per-team "Expanse cells unlocked" milestones: first-only for the 1st cell, then
+    -- first + fastest at each larger threshold. Reported from handle_completed_container.
+    pcall(remote.call, MTS_INTERFACE, 'register_milestone', {
+        category        = 'expanse-cells',
+        verb            = 'unlock',
+        noun            = 'Expanse cell',
+        first_threshold = 1,
+        thresholds      = { 10, 50, 100, 250, 500, 1000, 2000, 5000, 10000 },
+    })
     local ids = {}
     for name in pairs(MTS_EVENT_HANDLERS) do
         local ok, id = pcall(remote.call, MTS_INTERFACE, 'get_event_id', name)
@@ -1793,10 +1807,108 @@ local function process_state_schedule(state)
     end
 end
 
+-- Capitalised base planet name for the overlay's first line ("...'s Nauvis"). Falls back
+-- to "Nauvis" when the surface name can't be reduced to a shared planet.
+local function overlay_location_name(surface_name)
+    local base = base_planet_name(surface_name or '')
+    if base and #base > 0 then
+        return base:sub(1, 1):upper() .. base:sub(2)
+    end
+    return 'Nauvis'
+end
+
+-- Bump when the line positions/scales below change, so overlays saved under an older
+-- layout get rebuilt instead of lingering with stale geometry.
+local OVERLAY_LAYOUT = 2
+
+-- Tear down every overlay object for a state (the old single object + the line table).
+local function destroy_overlay(state)
+    if state.invasion_overlay then
+        if state.invasion_overlay.valid then state.invasion_overlay.destroy() end
+        state.invasion_overlay = nil
+    end
+    local o = state.overlay
+    if o then
+        for k, obj in pairs(o) do
+            if obj and obj.valid then obj.destroy() end
+            o[k] = nil
+        end
+    end
+end
+
+-- Draw, or update the text of, one centered overlay line; returns the live object.
+local function set_overlay_line(obj, surface, x, y, scale, caption)
+    if obj and obj.valid then
+        obj.text = caption
+        return obj
+    end
+    return rendering.draw_text {
+        text = caption,
+        surface = surface,
+        target = { x = x, y = y },
+        color = { r = 1, g = 1, b = 1 },   -- white: readable on both desert and grass
+        scale = scale,
+        alignment = 'center',
+        vertical_alignment = 'bottom',
+        use_rich_text = true,              -- needed for the team line's colour tags
+    }
+end
+
+-- On-surface overlay above the spawn cell, drawn as separate stacked lines (top -> bottom):
+--   <Team tag> [leader]'s <Planet>   (MTS only -- team colour + live leader, larger font)
+--   Cells unlocked: <n>              (cells unlocked through play = size - 1)
+--   Next biter invasion: x / y, z groups
+-- Separate objects (vs one multi-line string) give per-line font sizes and reliable line
+-- breaks. Rendered on the surface (no force filter) so the team AND any spectator can read
+-- it without opening a GUI; refreshed at 1 Hz from process_state_tick so all three stay
+-- current. Under MTS we suppress MTS's own spawn label so this replaces it.
+local function update_overlay(state)
+    local surface = state.active_surface_index and game.surfaces[state.active_surface_index]
+    if not (surface and surface.valid) then
+        return
+    end
+    if state.overlay_layout ~= OVERLAY_LAYOUT then
+        destroy_overlay(state)
+        state.overlay_layout = OVERLAY_LAYOUT
+    end
+    -- Suppress MTS's own spawn label. Keyed by surface name (not a sticky bool) so a surface
+    -- reset -- which creates a freshly-named surface MTS would re-label -- gets re-suppressed.
+    if is_mts_active() and state.mts_label_suppressed_surface ~= surface.name then
+        state.mts_label_suppressed_surface = surface.name
+        pcall(remote.call, MTS_INTERFACE, 'set_spawn_label_enabled', surface.name, false)
+    end
+
+    state.overlay = state.overlay or {}
+    local o        = state.overlay
+    local x        = (state.square_size or 15) * 0.5
+    local invasion = Functions.invasion_numbers(state)
+    local cells    = math.max(0, (state.size or 1) - 1)
+
+    o.invasion = set_overlay_line(o.invasion, surface, x, -2.0, 1.5,
+        { 'expanse.stats_attack', #(state.invasion_candidates or {}),
+          invasion.candidates, invasion.groups })
+    o.cells = set_overlay_line(o.cells, surface, x, -3.6, 1.5,
+        { 'expanse.overlay_cells', cells })
+
+    if is_mts_active() then
+        local ok, label = pcall(remote.call, MTS_INTERFACE, 'get_team_label', state_key(state))
+        if ok and type(label) == 'string' then
+            o.team = set_overlay_line(o.team, surface, x, -5.5, 2.2,
+                { '', label, "'s ", overlay_location_name(surface.name) })
+            return
+        end
+    end
+    if o.team and o.team.valid then
+        o.team.destroy()
+        o.team = nil
+    end
+end
+
 local function process_state_tick(state)
     if not state.active_surface_index or not game.surfaces[state.active_surface_index] then
         return
     end
+    update_overlay(state)
     if state.next_mts_nauvis_cleanup_tick and game.tick >= state.next_mts_nauvis_cleanup_tick then
         cleanup_mts_nauvis_surfaces(state)
     end
