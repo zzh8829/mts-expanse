@@ -1366,7 +1366,7 @@ end
 -- Milestones for *mining actions* (how many times the infini tree / rock was mined), as
 -- opposed to the raw wood/ore quantities -- those are tracked via native production stats.
 local MINE_MILESTONE = { tree = 'expanse-tree-mined', rock = 'expanse-rock-mined' }
-local MINE_THRESHOLDS = { 100, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000 }
+local MINE_THRESHOLDS = { 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000 }
 
 -- Count one tree/rock mining action for this team and report the running total to MTS.
 local function count_resource_mine(state, kind)
@@ -1490,12 +1490,19 @@ local function infini_resource(event)
     if not state then
         return
     end
-    -- on_entity_died is a death (biters etc.), not a mining action; the two pre-mined
-    -- events are player/robot mining.
-    local mined = event.name ~= defines.events.on_entity_died
+    -- A mining action is a player/robot pre-mine. For the rock (its ore spills on ANY
+    -- destruction) a team-caused kill counts too -- e.g. blasting or ramming it with a tank.
+    -- A biter or cause-less death does NOT count: it isn't the team harvesting, and counting
+    -- it would desync the per-team yield index (biters hit each team at different times).
+    local is_premine = event.name ~= defines.events.on_entity_died
+    local team_kill = false
+    if not is_premine then
+        local cause = event.cause
+        team_kill = (cause and cause.valid and cause.force and cause.force.name ~= 'enemy') or false
+    end
     if entity.name == 'big-rock' then
-        infini_rock(entity, state, mined)
-    elseif mined and (entity.type == 'tree' or entity.type == 'plant') then
+        infini_rock(entity, state, is_premine or team_kill)
+    elseif is_premine and (entity.type == 'tree' or entity.type == 'plant') then
         count_resource_mine(state, 'tree')
     end
 end
@@ -1727,7 +1734,15 @@ local function register_mts_event_handlers()
 end
 
 -- Call only from on_init / on_configuration_changed (remote.call is legal there).
+-- Set once per session. setup_mts_events registers the welcome/team tabs and milestones via
+-- remote.call (legal in on_init/on_configuration_changed/on_tick, NOT on_load). Re-running it
+-- from on_tick after a plain reload self-heals registration -- milestones added since the
+-- save's last on_init/on_configuration_changed get registered without a new game or a version
+-- bump. All the registrations are idempotent (they overwrite registry entries).
+local mts_setup_done = false
+
 local function setup_mts_events()
+    mts_setup_done = true
     if not is_mts_active() then
         return
     end
@@ -2050,6 +2065,11 @@ local function process_state_tick(state)
 end
 
 local function on_tick()
+    -- Self-heal MTS registration after a plain reload (on_load can't remote.call). Runs once
+    -- per session; on_init / on_configuration_changed already set the flag on those paths.
+    if not mts_setup_done then
+        setup_mts_events()
+    end
     process_pending_player_teleports()
     for _, state in iter_states() do
         process_state_tick(state)
