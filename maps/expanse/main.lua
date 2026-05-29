@@ -21,7 +21,6 @@ local Gui = require 'utils.gui'
 local format_number = require 'util'.format_number
 local Autostash = require 'modules.autostash'
 local FT = require 'utils.functions.flying_texts'
-local Raffle = require 'utils.math.raffle'
 
 local expanse = {
     events = {
@@ -865,6 +864,8 @@ reset = function(state)
     state.reset_tick = game.tick
     state.tree = nil
     state.rock = nil
+    state.tree_mined_count = 0
+    state.rock_mined_count = 0
     state.acid_tank = nil
     state.biome_offset = expanse.shared_biome_offset
     state.tiered_specials = {
@@ -1082,13 +1083,27 @@ end
 
 local function on_resource_depleted(event)
     local ore = event.entity
-    if ore and ore.valid then
-        local distance = math.sqrt(ore.position.x ^ 2 + ore.position.y ^ 2)
-        if ore.name == 'stone' and distance > 100 then
-            if math.random(1, 4) == 1 then
-                ore.surface.create_entity({ name = 'uranium-ore', position = ore.position, amount = 200 + math.floor(distance) * math.random(1, 3) })
-            end
-        end
+    if not (ore and ore.valid) then
+        return
+    end
+    local distance = math.sqrt(ore.position.x ^ 2 + ore.position.y ^ 2)
+    if ore.name ~= 'stone' or distance <= 100 then
+        return
+    end
+    -- Keyed by the depleted tile's position so every team's identical world turns the same
+    -- depleted stone into the same uranium (chance + amount). Falls back to the global RNG
+    -- only off an Expanse surface, where there's no shared seed to key on.
+    local state = state_from_surface(ore.surface)
+    local roll, bonus
+    if state then
+        roll  = Functions.cell_random_int(state, ore.position, 9500, 4)
+        bonus = Functions.cell_random_int(state, ore.position, 9501, 3)
+    else
+        roll  = math.random(1, 4)
+        bonus = math.random(1, 3)
+    end
+    if roll == 1 then
+        ore.surface.create_entity({ name = 'uranium-ore', position = ore.position, amount = 200 + math.floor(distance) * bonus })
     end
 end
 
@@ -1348,7 +1363,50 @@ local function uranium_mining(entity, state)
     end
 end
 
-local function infini_rock(entity, state)
+-- Milestones for *mining actions* (how many times the infini tree / rock was mined), as
+-- opposed to the raw wood/ore quantities -- those are tracked via native production stats.
+local MINE_MILESTONE = { tree = 'expanse-tree-mined', rock = 'expanse-rock-mined' }
+local MINE_THRESHOLDS = { 100, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000 }
+
+-- Count one tree/rock mining action for this team and report the running total to MTS.
+local function count_resource_mine(state, kind)
+    local field = kind == 'tree' and 'tree_mined_count' or 'rock_mined_count'
+    local n = (state[field] or 0) + 1
+    state[field] = n
+    if is_mts_active() then
+        local fname = state_key(state)
+        if is_team_force_name(fname) then
+            pcall(remote.call, MTS_INTERFACE, 'report_milestone', fname, MINE_MILESTONE[kind], n)
+        end
+    end
+end
+
+-- Deterministic weighted pick keyed by the shared seed + position + salt (via
+-- Functions.cell_random_int), so every team gets the same item for the same salt. Tree/rock
+-- rolls must be identical across teams for fairness; drawing from the interleaved global RNG
+-- made them diverge. Keys are sorted so the walk order is stable across peers/saves
+-- (pairs() iteration order is not deterministic).
+local function deterministic_weighted(state, position, salt, weights)
+    local keys, total = {}, 0
+    for name, w in pairs(weights) do
+        if w and w > 0 then keys[#keys + 1] = name end
+    end
+    if #keys == 0 then return nil end
+    table.sort(keys)
+    for _, name in ipairs(keys) do total = total + weights[name] end
+    local roll = Functions.cell_random_int(state, position, salt, total)
+    local acc = 0
+    for _, name in ipairs(keys) do
+        acc = acc + weights[name]
+        if roll <= acc then return name end
+    end
+    return keys[#keys]
+end
+
+-- mined: true when this call comes from an actual mining action (player/robot), false for a
+-- death or a scripted regrow -- so only mining actions count toward the milestone, while the
+-- ore is always registered as produced.
+local function infini_rock(entity, state, mined)
     if entity.type ~= 'simple-entity' then
         return
     end
@@ -1365,8 +1423,18 @@ local function infini_rock(entity, state)
     local a = math.floor(state.square_size * 0.5)
     if entity.position.x == a + 4 and entity.position.y == a - 4 then
         local newrock = entity.surface.create_entity({ name = 'big-rock', position = { a + 4, a - 4 } })
-        local roll = Raffle.raffle(inf_ores)
-        entity.surface.spill_item_stack({position = entity.position, stack = { name = roll, count = math.random(80, 160) }, enable_looted = true, allow_belts = true})
+        -- Advance the mine index before rolling so the Nth mine's yield is keyed by N (and so
+        -- identical across teams). Deaths / scripted regrows reuse the current index.
+        if mined then count_resource_mine(state, 'rock') end
+        local index = state.rock_mined_count or 0
+        local roll = deterministic_weighted(state, entity.position, index * 2, inf_ores)
+        local amount = 80 + Functions.cell_random_int(state, entity.position, index * 2 + 1, 81) - 1
+        if roll then
+            entity.surface.spill_item_stack({position = entity.position, stack = { name = roll, count = amount }, enable_looted = true, allow_belts = true})
+            -- Register the rock's ore as produced so it shows in the native per-team Production GUI.
+            local stats = state_force(state).get_item_production_statistics(entity.surface)
+            if stats then stats.on_flow(roll, amount) end
+        end
         uranium_mining(entity, state)
         if newrock then
             state.rock = script.register_on_object_destroyed(newrock)
@@ -1404,7 +1472,9 @@ local function infini_tree(state)
     local surface = game.surfaces[state.active_surface_index]
     local position = {a - 4, a + 4}
 
-    local newtree = surface.create_entity({ name = Raffle.raffle(trees), position = position, }) --register_plant = true ?
+    -- Roll the regrown tree deterministically by mine index so every team's Nth tree matches.
+    local tree_name = deterministic_weighted(state, { x = a - 4, y = a + 4 }, state.tree_mined_count or 0, trees)
+    local newtree = tree_name and surface.create_entity({ name = tree_name, position = position })
     if newtree then
         state.tree = script.register_on_object_destroyed(newtree)
         register_state_object(state, state.tree)
@@ -1420,8 +1490,13 @@ local function infini_resource(event)
     if not state then
         return
     end
+    -- on_entity_died is a death (biters etc.), not a mining action; the two pre-mined
+    -- events are player/robot mining.
+    local mined = event.name ~= defines.events.on_entity_died
     if entity.name == 'big-rock' then
-        infini_rock(entity, state)
+        infini_rock(entity, state, mined)
+    elseif mined and (entity.type == 'tree' or entity.type == 'plant') then
+        count_resource_mine(state, 'tree')
     end
 end
 
@@ -1444,6 +1519,36 @@ local function infini_resource2(event)
     elseif event.registration_number == state.rock then
         local a = math.floor(state.square_size * 0.5)
         infini_rock({type = 'simple-entity', position = {x = a + 4, y = a - 4 }, surface = game.surfaces[state.active_surface_index]}, state)
+    end
+end
+
+-- Register the items a mined infini tree / rock yields into the team's production stats so
+-- the native (and MTS) Production GUI tracks them. Hand/robot mining of trees and the
+-- simple-entity rock does NOT count toward production stats on its own, so we do it
+-- explicitly: tree wood and the rock's vanilla stone. (The rock's scripted ore spill is
+-- registered separately in infini_rock.)
+local function track_mined_production(event)
+    local entity = event.entity
+    if not (entity and entity.valid) then
+        return
+    end
+    if not (entity.name == 'big-rock' or entity.type == 'tree' or entity.type == 'plant') then
+        return
+    end
+    local buffer = event.buffer
+    if not (buffer and buffer.valid) then
+        return
+    end
+    local state = state_from_surface(entity.surface)
+    if not state then
+        return
+    end
+    local stats = state_force(state).get_item_production_statistics(entity.surface)
+    if not stats then
+        return
+    end
+    for _, item in pairs(buffer.get_contents()) do
+        stats.on_flow(item.name, item.count)
     end
 end
 
@@ -1640,6 +1745,21 @@ local function setup_mts_events()
         noun            = 'Expanse cell',
         first_threshold = 1,
         thresholds      = { 10, 50, 100, 250, 500, 1000, 2000, 5000, 10000 },
+    })
+    -- Mining-action milestones (how many times the infini tree / rock was mined). No
+    -- first_threshold -- a single mine is too trivial; the race starts at 100. Reported
+    -- from count_resource_mine.
+    pcall(remote.call, MTS_INTERFACE, 'register_milestone', {
+        category   = 'expanse-tree-mined',
+        verb       = 'mine',
+        noun       = 'tree',
+        thresholds = MINE_THRESHOLDS,
+    })
+    pcall(remote.call, MTS_INTERFACE, 'register_milestone', {
+        category   = 'expanse-rock-mined',
+        verb       = 'mine',
+        noun       = 'rock',
+        thresholds = MINE_THRESHOLDS,
     })
     local ids = {}
     for name in pairs(MTS_EVENT_HANDLERS) do
@@ -3701,6 +3821,8 @@ Event.add(defines.events.on_player_joined_game, on_player_joined_game)
 Event.add(defines.events.on_pre_player_left_game, on_pre_player_left_game)
 Event.add(defines.events.on_pre_player_mined_item, infini_resource)
 Event.add(defines.events.on_robot_pre_mined, infini_resource)
+Event.add(defines.events.on_player_mined_entity, track_mined_production)
+Event.add(defines.events.on_robot_mined_entity, track_mined_production)
 Event.add(defines.events.on_research_finished, on_research_finished)
 Event.add(defines.events.on_rocket_launch_ordered, on_rocket_launch_ordered)
 Event.add(defines.events.on_cargo_pod_finished_ascending, on_cargo_pod_finished_ascending)

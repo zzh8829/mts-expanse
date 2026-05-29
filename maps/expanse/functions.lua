@@ -89,7 +89,9 @@ local function reward_tokens(expanse, entity)
 
     if chance > 0 then
         chance = math.floor(chance * 1000)
-        if math.random(1, 1000) <= chance then
+        -- Keyed by chest position so the bonus token is identical across teams (each team's
+        -- copy of the same cell rolls the same), rather than drawing the interleaved global RNG.
+        if cell_random_int(expanse, entity.position, 61000, 1000) <= chance then
             entity.surface.spill_item_stack({ position = entity.position, stack = { name = 'coin', count = 1 }, enable_looted = true, allow_belts = false })
         end
     end
