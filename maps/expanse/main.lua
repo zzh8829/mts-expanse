@@ -2532,35 +2532,37 @@ commands.add_command(
             return { ok = false, error = 'missing matching second team hungry chest target', left_top = target_a.left_top }
         end
 
+        -- Team A reveals + rerolls FIRST, and only then does team B reveal the same cell.
+        -- Rerolls are per-team now, so A's reroll must not leak into B: B still sees the
+        -- canonical generation-0 offer, identical to what A first saw. (Name kept for the
+        -- test harness; it now verifies independence rather than the old shared behavior.)
         local container_a = reveal_hungry_chest_target(state_a, target_a)
-        local container_b = reveal_hungry_chest_target(state_b, target_b)
-        if not (container_a and container_b) then
-            return { ok = false, error = 'failed to reveal matching hungry chests' }
+        if not container_a then
+            return { ok = false, error = 'failed to reveal team A hungry chest' }
         end
-
         local initial_a = price_signature(container_a)
-        local initial_b = price_signature(container_b)
         local reroll_a, err_a = reroll_hungry_chest_target(state_a, target_a)
-        local reroll_b, err_b = reroll_hungry_chest_target(state_b, target_b)
+
+        local container_b = reveal_hungry_chest_target(state_b, target_b)
+        if not container_b then
+            return { ok = false, error = 'failed to reveal team B hungry chest' }
+        end
+        local initial_b = price_signature(container_b)
+
         local ok = reroll_a ~= nil
-            and reroll_b ~= nil
-            and initial_a == initial_b
-            and reroll_a.signature == reroll_b.signature
-            and reroll_a.signature ~= initial_a
-            and reroll_a.generation == reroll_b.generation
+            and reroll_a.signature ~= initial_a   -- A's reroll changed A's own offer
+            and initial_b == initial_a            -- B is unaffected: still the original offer
 
         return {
             ok = ok,
-            error = ok and nil or (err_a or err_b or 'synced reroll signatures differ'),
+            error = ok and nil or (err_a or 'team A reroll leaked into team B offer'),
             force_a = state_key(state_a),
             force_b = state_key(state_b),
             left_top = target_a.left_top,
             initial_a = initial_a,
             initial_b = initial_b,
             reroll_a = reroll_a and reroll_a.signature or nil,
-            reroll_b = reroll_b and reroll_b.signature or nil,
-            generation_a = reroll_a and reroll_a.generation or nil,
-            generation_b = reroll_b and reroll_b.generation or nil
+            generation_a = reroll_a and reroll_a.generation or nil
         }
     end
 

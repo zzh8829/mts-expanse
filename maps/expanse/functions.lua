@@ -1230,59 +1230,55 @@ local function init_container(expanse, entity, budget, known_left_top)
         [10] = 3
     }
     local tier, distance = calculate_tier(expanse, left_top)
+    -- Cell tier/distance are world layout: deterministic per (planet, position) and shared
+    -- across teams, so cache them on the meta cell. The PRICE and its rerolls are per-team:
+    -- the reroll generation lives on THIS container, never on the shared meta cell, so one
+    -- team rerolling (or feeding) a chest can never change another team's chest.
     local meta_cell = expanse.sync_cell_content ~= false and ensure_meta_cell(expanse, left_top) or nil
-    local cell_value
-    local reroll_generation = meta_cell and (meta_cell.price_reroll_generation or 0) or 0
-    local price_entries = meta_cell and meta_cell.price_entries or nil
-    if price_entries then
+    if meta_cell then
         tier = meta_cell.tier or tier
         distance = meta_cell.distance or distance
-        cell_value = meta_cell.price_budget or meta_cell.cell_value
-    else
-        local item_stacks = {}
-        cell_value = budget or meta_cell and meta_cell.price_budget or get_cell_value(expanse, left_top) * tier_multi[tier]
-        local locker = get_tier_locker(tier)
-        if locker then
-            item_stacks[locker] = {['normal'] = 10}
-        end
-        local roll_count = expanse.price_roll_count or 3
-        for roll_index = 1, roll_count, 1 do
-            local rng = expanse.sync_cell_content ~= false and make_cell_rng(expanse, left_top, 10000 + reroll_generation * 100000 + roll_index * 1000) or nil
-            for _, stack in pairs(Price_raffle.roll(math.floor(cell_value / roll_count), 3, tier, nil, state_force(expanse), rng)) do
-                if not item_stacks[stack.name] then
-                    item_stacks[stack.name] = {[stack.quality] = stack.count}
-                elseif not item_stacks[stack.name][stack.quality] then
-                    item_stacks[stack.name][stack.quality] = stack.count
-                else
-                    item_stacks[stack.name][stack.quality] = item_stacks[stack.name][stack.quality] + stack.count
-                end
+        meta_cell.tier = tier
+        meta_cell.distance = distance
+    end
+    local existing = expanse.containers[entity.unit_number]
+    local reroll_generation = (existing and existing.reroll_generation) or 0
+    local cell_value = budget or get_cell_value(expanse, left_top) * tier_multi[tier]
+    -- Generation 0 is deterministic per planet+position, so every team starts with the same
+    -- offer; each reroll advances only this container's generation.
+    local item_stacks = {}
+    local locker = get_tier_locker(tier)
+    if locker then
+        item_stacks[locker] = {['normal'] = 10}
+    end
+    local roll_count = expanse.price_roll_count or 3
+    for roll_index = 1, roll_count, 1 do
+        local rng = expanse.sync_cell_content ~= false and make_cell_rng(expanse, left_top, 10000 + reroll_generation * 100000 + roll_index * 1000) or nil
+        for _, stack in pairs(Price_raffle.roll(math.floor(cell_value / roll_count), 3, tier, nil, state_force(expanse), rng)) do
+            if not item_stacks[stack.name] then
+                item_stacks[stack.name] = {[stack.quality] = stack.count}
+            elseif not item_stacks[stack.name][stack.quality] then
+                item_stacks[stack.name][stack.quality] = stack.count
+            else
+                item_stacks[stack.name][stack.quality] = item_stacks[stack.name][stack.quality] + stack.count
             end
         end
+    end
 
-        price_entries = {}
-        local names = {}
-        for name, _ in pairs(item_stacks) do
-            names[#names + 1] = name
+    local price_entries = {}
+    local names = {}
+    for name, _ in pairs(item_stacks) do
+        names[#names + 1] = name
+    end
+    table.sort(names)
+    for _, name in ipairs(names) do
+        local quality_names = {}
+        for quality, _ in pairs(item_stacks[name]) do
+            quality_names[#quality_names + 1] = quality
         end
-        table.sort(names)
-        for _, name in ipairs(names) do
-            local quality_names = {}
-            for quality, _ in pairs(item_stacks[name]) do
-                quality_names[#quality_names + 1] = quality
-            end
-            table.sort(quality_names)
-            for _, quality in ipairs(quality_names) do
-                price_entries[#price_entries + 1] = { name = name, quality = quality, count = item_stacks[name][quality] }
-            end
-        end
-
-        if meta_cell then
-            meta_cell.tier = tier
-            meta_cell.distance = distance
-            meta_cell.cell_value = meta_cell.cell_value or cell_value
-            meta_cell.price_budget = cell_value
-            meta_cell.price_entries = table.deepcopy(price_entries)
-            meta_cell.price_reroll_generation = reroll_generation
+        table.sort(quality_names)
+        for _, quality in ipairs(quality_names) do
+            price_entries[#price_entries + 1] = { name = name, quality = quality, count = item_stacks[name][quality] }
         end
     end
 
@@ -1360,16 +1356,9 @@ function Public.set_container(expanse, entity, known_left_top, reveal)
                 expanse.cost_stats[Public.make_key('coin', 'normal')] = (expanse.cost_stats[Public.make_key('coin', 'normal')] or 0) + count_removed
                 script.raise_event(expanse.events.gui_update, { item = 'coin', quality = 'normal', force_name = expanse.force_name })
                 local remaining_budget = get_remaining_budget(expanse, container)
-                local meta_cell = expanse.sync_cell_content ~= false and ensure_meta_cell(expanse, container.left_top) or nil
-                if meta_cell then
-                    local container_generation = container.reroll_generation or 0
-                    local canonical_generation = meta_cell.price_reroll_generation or 0
-                    if canonical_generation <= container_generation then
-                        meta_cell.price_reroll_generation = canonical_generation + 1
-                        meta_cell.price_entries = nil
-                        meta_cell.price_budget = remaining_budget
-                    end
-                end
+                -- Per-team reroll: advance only THIS container's generation; never touch the
+                -- shared meta cell, so other teams' chests are completely unaffected.
+                container.reroll_generation = (container.reroll_generation or 0) + 1
                 remove_old_renders(container)
                 init_container(expanse, entity, remaining_budget, container.left_top)
                 container = expanse.containers[entity.unit_number]
