@@ -1368,12 +1368,22 @@ end
 local MINE_MILESTONE = { tree = 'expanse-tree-mined', rock = 'expanse-rock-mined' }
 local MINE_THRESHOLDS = { 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000 }
 
+local function mine_count_crossed_threshold(previous, current)
+    for _, threshold in ipairs(MINE_THRESHOLDS) do
+        if previous < threshold and current >= threshold then
+            return true
+        end
+    end
+    return false
+end
+
 -- Count one tree/rock mining action for this team and report the running total to MTS.
 local function count_resource_mine(state, kind)
     local field = kind == 'tree' and 'tree_mined_count' or 'rock_mined_count'
-    local n = (state[field] or 0) + 1
+    local previous = state[field] or 0
+    local n = previous + 1
     state[field] = n
-    if is_mts_active() then
+    if is_mts_active() and mine_count_crossed_threshold(previous, n) then
         local fname = state_key(state)
         if is_team_force_name(fname) then
             pcall(remote.call, MTS_INTERFACE, 'report_milestone', fname, MINE_MILESTONE[kind], n)
@@ -1886,13 +1896,44 @@ local function process_pending_player_teleports()
     end
 end
 
+local HUNGRY_SCAN_BUDGET = 64
+
+local function start_hungry_scan_pass(state)
+    local keys = {}
+    for unit_number, _ in pairs(state.containers or {}) do
+        keys[#keys + 1] = unit_number
+    end
+    table.sort(keys)
+    state.hungry_scan_keys = keys
+    state.hungry_scan_index = 1
+    state.hungry_scan_live_containers = 0
+    state.last_hungry_scan_started_tick = game.tick
+end
+
 local function process_hungry_chests(state)
-    state.last_hungry_scan_tick = game.tick
-    local live_containers = 0
-    for unit_number, container in pairs(state.containers or {}) do
-        local entity = container.entity
+    if not state.hungry_scan_keys or (state.hungry_scan_index or 1) > #state.hungry_scan_keys then
+        start_hungry_scan_pass(state)
+    end
+
+    if #state.hungry_scan_keys == 0 then
+        state.last_hungry_scan_tick = game.tick
+        state.last_frontier_repair_tick = game.tick
+        state.last_frontier_repair_created = Functions.ensure_frontier_chests(state)
+        state.hungry_scan_keys = nil
+        state.hungry_scan_index = nil
+        state.hungry_scan_live_containers = nil
+        return
+    end
+
+    local processed = 0
+    while processed < HUNGRY_SCAN_BUDGET and state.hungry_scan_index <= #state.hungry_scan_keys do
+        local unit_number = state.hungry_scan_keys[state.hungry_scan_index]
+        state.hungry_scan_index = state.hungry_scan_index + 1
+        processed = processed + 1
+        local container = state.containers and state.containers[unit_number] or nil
+        local entity = container and container.entity or nil
         if entity and entity.valid then
-            live_containers = live_containers + 1
+            state.hungry_scan_live_containers = (state.hungry_scan_live_containers or 0) + 1
             local expansion_position = Functions.set_container(state, entity, nil, false)
             if expansion_position then
                 state.last_hungry_completion_tick = game.tick
@@ -1903,9 +1944,28 @@ local function process_hungry_chests(state)
             state.containers[unit_number] = nil
         end
     end
-    if live_containers == 0 then
-        state.last_frontier_repair_tick = game.tick
-        state.last_frontier_repair_created = Functions.ensure_frontier_chests(state)
+
+    if state.hungry_scan_index > #state.hungry_scan_keys then
+        state.last_hungry_scan_tick = game.tick
+        if (state.hungry_scan_live_containers or 0) == 0 then
+            state.last_frontier_repair_tick = game.tick
+            state.last_frontier_repair_created = Functions.ensure_frontier_chests(state)
+        end
+        state.hungry_scan_keys = nil
+        state.hungry_scan_index = nil
+        state.hungry_scan_live_containers = nil
+    end
+end
+
+local function process_hungry_chests_for_online_states()
+    for _, state in iter_states() do
+        if state.active_surface_index and game.surfaces[state.active_surface_index] and state_has_connected_players(state) then
+            process_hungry_chests(state)
+        else
+            state.hungry_scan_keys = nil
+            state.hungry_scan_index = nil
+            state.hungry_scan_live_containers = nil
+        end
     end
 end
 
@@ -2047,12 +2107,6 @@ local function process_state_tick(state)
     if state.next_mts_nauvis_cleanup_tick and game.tick >= state.next_mts_nauvis_cleanup_tick then
         cleanup_mts_nauvis_surfaces(state)
     end
-    -- Skip the hungry-chest scan for teams with nobody online. A completion just gets
-    -- detected on the next tick after someone reconnects (the fed items are still in the
-    -- chest), so no progress is lost -- offline teams simply don't cost per-tick work.
-    if state_has_connected_players(state) then
-        process_hungry_chests(state)
-    end
     if SpaceMissions.enabled() then
         SpaceMissions.ensure_support(state)
         SpaceMissions.launch_rockets(state)
@@ -2074,6 +2128,10 @@ local function on_tick()
     for _, state in iter_states() do
         process_state_tick(state)
     end
+end
+
+local function on_hungry_tick()
+    process_hungry_chests_for_online_states()
 end
 
 local function resource_stats(parent, name, quality, count, state)
@@ -3829,6 +3887,7 @@ commands.add_command(
 Event.on_init(on_init)
 Event.on_configuration_changed(on_configuration_changed)
 Event.on_load(register_mts_event_handlers)
+Event.on_nth_tick(10, on_hungry_tick)
 Event.on_nth_tick(60, on_tick)
 Event.add(defines.events.on_chunk_generated, on_chunk_generated)
 Event.add(defines.events.on_area_cloned, on_area_cloned)

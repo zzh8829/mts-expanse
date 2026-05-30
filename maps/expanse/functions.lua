@@ -1321,6 +1321,41 @@ function Public.split_key(key)
     return string.match(key, '^(.-)|(.+)$')
 end
 
+local function price_request_signature(price)
+    local parts = {}
+    for index, item in ipairs(price or {}) do
+        parts[index] = table.concat({ item.name, item.quality, tostring(item.count) }, '|')
+    end
+    return table.concat(parts, ';')
+end
+
+local function sync_container_requests(container, force)
+    local logi = container.entity.get_logistic_point(defines.logistic_member_index.logistic_container)
+    if not logi then
+        return
+    end
+    local signature = price_request_signature(container.price)
+    if not force and container.request_signature == signature then
+        return
+    end
+    for i = 1, 256, 1 do
+        if logi.get_section(i) then
+            logi.remove_section(i)
+        end
+    end
+
+    logi.add_section()
+    local section = logi.get_section(1)
+
+    for slot = 1, #container.price, 1 do
+        if #container.price >= slot then
+            local item = container.price[slot]
+            section.set_slot(slot, { value = {type = 'item', name = item.name, quality = item.quality, comparator = '='}, min = item.count })
+        end
+    end
+    container.request_signature = signature
+end
+
 function Public.set_container(expanse, entity, known_left_top, reveal)
     if entity.name ~= 'requester-chest' then
         return
@@ -1379,11 +1414,13 @@ function Public.set_container(expanse, entity, known_left_top, reveal)
         local quality = item_stack.quality
         local count_removed = inventory.remove({ name = name, count = item_stack.count, quality = item_stack.quality})
         container.price[key].count = container.price[key].count - count_removed
-        expanse.cost_stats[Public.make_key(name, quality)] = (expanse.cost_stats[Public.make_key(name, quality)] or 0) + count_removed
-        script.raise_event(expanse.events.gui_update, { item = name, quality = quality, force_name = expanse.force_name})
-        if container.price[key].count <= 0 then
-            remove_one_render(container, key)
-            table.remove(container.price, key)
+        if count_removed > 0 then
+            expanse.cost_stats[Public.make_key(name, quality)] = (expanse.cost_stats[Public.make_key(name, quality)] or 0) + count_removed
+            script.raise_event(expanse.events.gui_update, { item = name, quality = quality, force_name = expanse.force_name})
+            if container.price[key].count <= 0 then
+                remove_one_render(container, key)
+                table.remove(container.price, key)
+            end
         end
     end
 
@@ -1408,25 +1445,7 @@ function Public.set_container(expanse, entity, known_left_top, reveal)
         entity.die()
         return expansion_position
     end
-    local logi = container.entity.get_logistic_point(defines.logistic_member_index.logistic_container)
-    if not logi then
-        return
-    end
-    for i = 1, 256, 1 do
-        if logi.get_section(i) then
-            logi.remove_section(i)
-        end
-    end
-
-    logi.add_section()
-    local section = logi.get_section(1)
-
-    for slot = 1, #container.price, 1 do
-        if #container.price >= slot then
-            local item = container.price[slot]
-            section.set_slot(slot, { value = {type = 'item', name = item.name, quality = item.quality, comparator = '='}, min = item.count })
-        end
-    end
+    sync_container_requests(container, should_reveal)
 end
 
 Public.cell_random_int = cell_random_int
