@@ -1321,7 +1321,8 @@ local function container_opened(event)
     if not state or entity.surface.index ~= state.active_surface_index then
         return
     end
-    local expansion_position = Functions.set_container(state, entity, nil, true)
+    local container = state.containers and state.containers[entity.unit_number] or nil
+    local expansion_position = Functions.set_container(state, entity, container and container.left_top or nil, true)
     if expansion_position then
         local player = game.players[event.player_index]
         handle_completed_container(state, expansion_position, player)
@@ -1839,6 +1840,10 @@ local function on_configuration_changed(_event)
         else
             SpaceMissions.reset_space(state)
         end
+        if state.active_surface_index and game.surfaces[state.active_surface_index] then
+            state.last_frontier_repair_tick = game.tick
+            state.last_frontier_repair_created = Functions.ensure_frontier_chests(state)
+        end
         schedule_mts_nauvis_cleanup(state, 120)
     end
     if SpaceMissions.enabled() then
@@ -1934,7 +1939,7 @@ local function process_hungry_chests(state)
         local entity = container and container.entity or nil
         if entity and entity.valid then
             state.hungry_scan_live_containers = (state.hungry_scan_live_containers or 0) + 1
-            local expansion_position = Functions.set_container(state, entity, nil, false)
+            local expansion_position = Functions.set_container(state, entity, container.left_top, false)
             if expansion_position then
                 state.last_hungry_completion_tick = game.tick
                 handle_completed_container(state, expansion_position)
@@ -2754,6 +2759,38 @@ commands.add_command(
         return table.concat(rows, ';')
     end
 
+    local function position_has_adjacent_out_of_map(surface, position)
+        for _, vector in pairs({ { -1, 0 }, { 1, 0 }, { 0, 1 }, { 0, -1 } }) do
+            local tile = surface.get_tile(position.x + vector[1], position.y + vector[2])
+            if tile and tile.valid and tile.name == 'out-of-map' then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function find_displaced_hungry_chest_position(surface, origin, max_radius)
+        for radius = 2, max_radius, 1 do
+            for dx = -radius, radius, 1 do
+                for dy = -radius, radius, 1 do
+                    if math.max(math.abs(dx), math.abs(dy)) == radius then
+                        local position = { x = origin.x + dx, y = origin.y + dy }
+                        local tile = surface.get_tile(position)
+                        if tile
+                            and tile.valid
+                            and tile.name ~= 'out-of-map'
+                            and not position_has_adjacent_out_of_map(surface, position)
+                            and surface.can_place_entity({ name = 'requester-chest', position = position, force = 'neutral' })
+                        then
+                            return position
+                        end
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
     local function reveal_hungry_chest_target(state, target)
         local expansion_position = Functions.set_container(state, target.entity, target.left_top, true)
         if expansion_position then
@@ -2923,6 +2960,106 @@ commands.add_command(
             request_name = has_request and slot.value.name or nil,
             request_quality = has_request and slot.value.quality or nil,
             request_count = has_request and slot.min or nil
+        }
+    end
+
+    function Public.probe_lake_fallback_hungry_chest(force_name)
+        local state = force_name and state_from_force_name(force_name) or expanse
+        reset(state)
+        ensure_state_ready(state)
+        local surface = game.surfaces[state.active_surface_index]
+        if not (surface and surface.valid) then
+            return { ok = false, error = 'missing active surface', force_name = state_key(state) }
+        end
+
+        local target = first_admin_open_target(state)
+        if not target then
+            return { ok = false, error = 'missing hungry chest target', force_name = state_key(state) }
+        end
+
+        local original_position = { x = target.entity.position.x, y = target.entity.position.y }
+        local left_top = { x = target.left_top.x, y = target.left_top.y }
+        local before_size = state.size or 0
+        destroy_hungry_chest(state, target.entity)
+        surface.set_tiles({ { name = 'water', position = original_position } }, true)
+
+        local displaced_position = find_displaced_hungry_chest_position(surface, original_position, math.max(8, state.square_size or 15))
+        if not displaced_position then
+            return {
+                ok = false,
+                error = 'missing displaced hungry chest position',
+                force_name = state_key(state),
+                original_position = original_position,
+                left_top = left_top
+            }
+        end
+
+        local entity = surface.create_entity({ name = 'requester-chest', position = displaced_position, force = 'neutral' })
+        if not entity then
+            return {
+                ok = false,
+                error = 'failed to create displaced hungry chest',
+                force_name = state_key(state),
+                original_position = original_position,
+                displaced_position = displaced_position,
+                left_top = left_top
+            }
+        end
+        entity.destructible = false
+        entity.minable = false
+        local created_position = { x = entity.position.x, y = entity.position.y }
+
+        state.containers = state.containers or {}
+        state.containers[entity.unit_number] = {
+            entity = entity,
+            left_top = left_top,
+            price = {},
+            revealed = false,
+            force_name = state_key(state),
+            surface_index = state.active_surface_index
+        }
+
+        local before_adjacent_out_of_map = position_has_adjacent_out_of_map(surface, entity.position)
+        local before_point = entity.get_logistic_point(defines.logistic_member_index.logistic_container)
+        local before_section = before_point and before_point.get_section(1) ~= nil or false
+        local expansion_position = Functions.set_container(state, entity, nil, true)
+        if expansion_position then
+            handle_completed_container(state, expansion_position)
+        end
+
+        local container = state.containers and state.containers[entity.unit_number] or nil
+        local point = entity.valid and entity.get_logistic_point(defines.logistic_member_index.logistic_container) or nil
+        local section = point and point.get_section(1) or nil
+        local ok_slot, slot = pcall(function()
+            return section and section.get_slot(1) or nil
+        end)
+        local has_request = ok_slot
+            and slot
+            and slot.value
+            and slot.value.type == 'item'
+            and slot.value.name
+            and slot.min
+            and slot.min > 0
+        local opened = expansion_position ~= nil and state.grid[state_grid_key(left_top)] == true and (state.size or 0) > before_size
+        local revealed = container ~= nil and container.revealed == true and has_request == true
+
+        return {
+            ok = before_adjacent_out_of_map == false and (revealed or opened),
+            error = (before_adjacent_out_of_map == false and (revealed or opened)) and nil or 'displaced hungry chest did not reveal or open',
+            force_name = state_key(state),
+            original_position = original_position,
+            displaced_position = created_position,
+            left_top = left_top,
+            before_adjacent_out_of_map = before_adjacent_out_of_map,
+            before_section = before_section,
+            revealed = revealed,
+            opened = opened,
+            price_count = container and #(container.price or {}) or 0,
+            request_name = has_request and slot.value.name or nil,
+            request_quality = has_request and slot.value.quality or nil,
+            request_count = has_request and slot.min or nil,
+            before_size = before_size,
+            after_size = state.size or 0
         }
     end
 

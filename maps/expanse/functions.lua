@@ -344,7 +344,13 @@ local function register_container(expanse, entity, known_left_top)
         return nil
     end
 
+    expanse.containers = expanse.containers or {}
+    local container = expanse.containers[entity.unit_number]
+
     local left_top = known_left_top
+    if (not left_top or is_cell_open(expanse, left_top)) and container and container.left_top and not is_cell_open(expanse, container.left_top) then
+        left_top = container.left_top
+    end
     if not left_top or is_cell_open(expanse, left_top) then
         left_top = get_left_top(expanse, entity.position)
     end
@@ -352,8 +358,6 @@ local function register_container(expanse, entity, known_left_top)
         return nil
     end
 
-    expanse.containers = expanse.containers or {}
-    local container = expanse.containers[entity.unit_number]
     if not container then
         container = {
             entity = entity,

@@ -1,4 +1,14 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.8
+Date: 30. 05. 2026
+  Bugfixes:
+    - Fixed hungry chests displaced by lakes or other unbuildable frontier tiles so opening them
+      uses the stored target cell instead of requiring adjacency to out-of-map.
+    - Existing saves now repair frontier hungry chests on configuration change, rebuilding stale
+      or missing chest targets after upgrading from older versions.
+  Tests:
+    - Added headless probes for displaced lake hungry chests in single-team and MTS team modes.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.7
 Date: 29. 05. 2026
   Optimizations:

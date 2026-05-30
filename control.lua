@@ -115,6 +115,9 @@ remote.add_interface(
         probe_reroll_first_hungry_chest = function (force_name)
             return Expanse.probe_reroll_first_hungry_chest(force_name)
         end,
+        probe_lake_fallback_hungry_chest = function (force_name)
+            return Expanse.probe_lake_fallback_hungry_chest(force_name)
+        end,
         probe_synced_hungry_chest_reroll = function (force_name_a, force_name_b)
             return Expanse.probe_synced_hungry_chest_reroll(force_name_a, force_name_b)
         end,
