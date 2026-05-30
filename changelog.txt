@@ -1,4 +1,14 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.7
+Date: 29. 05. 2026
+  Optimizations:
+    - Spread hungry-chest scanning across smaller batches so large team maps do not process every
+      tracked chest in one update.
+    - Avoid rebuilding requester sections and refreshing GUI stats for revealed hungry chests when
+      no requested items changed.
+    - Report infini tree and rock mining milestones to Multi-Team Support only when a configured
+      threshold is crossed.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.6
 Date: 29. 05. 2026
   Features:
