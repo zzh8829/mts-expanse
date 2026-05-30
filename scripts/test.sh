@@ -192,6 +192,23 @@ local function assert_hungry_chest_reroll(label)
     end
 end
 
+local function assert_lake_fallback_hungry_chest(label)
+    local probe = remote.call('mts_expanse', 'probe_lake_fallback_hungry_chest')
+    if type(probe) ~= 'table' or probe.ok ~= true then
+        error(
+            label .. ': lake fallback hungry chest probe failed: error=' .. tostring(probe and probe.error) ..
+            ' revealed=' .. tostring(probe and probe.revealed) ..
+            ' opened=' .. tostring(probe and probe.opened) ..
+            ' before_adjacent_out_of_map=' .. tostring(probe and probe.before_adjacent_out_of_map) ..
+            ' price_count=' .. tostring(probe and probe.price_count) ..
+            ' request_name=' .. tostring(probe and probe.request_name)
+        )
+    end
+    if probe.before_adjacent_out_of_map ~= false then
+        error(label .. ': lake fallback probe chest still touched out-of-map')
+    end
+end
+
 local function assert_admin_open_chest_lifecycle()
     local probe = remote.call('mts_expanse', 'probe_admin_open')
     if type(probe) ~= 'table' then
@@ -434,6 +451,12 @@ script.on_nth_tick(
                 error('reset after reroll probe did not return true')
             end
             assert_hungry_chest_hidden('after reroll reset')
+            assert_lake_fallback_hungry_chest('after reroll reset')
+            ok = remote.call('mts_expanse', 'reset')
+            if ok ~= true then
+                error('reset after lake fallback probe did not return true')
+            end
+            assert_hungry_chest_hidden('after lake fallback reset')
             completion_context = fill_first_hungry_chest('after reset')
             return
         end

@@ -323,6 +323,23 @@ local function assert_synced_hungry_chest_reroll()
     end
 end
 
+local function assert_lake_fallback_hungry_chest(force_name)
+    local probe = remote.call('mts_expanse', 'probe_lake_fallback_hungry_chest', force_name)
+    if type(probe) ~= 'table' or probe.ok ~= true then
+        fail(
+            force_name .. ' lake fallback hungry chest probe failed: error=' .. tostring(probe and probe.error) ..
+            ' revealed=' .. tostring(probe and probe.revealed) ..
+            ' opened=' .. tostring(probe and probe.opened) ..
+            ' before_adjacent_out_of_map=' .. tostring(probe and probe.before_adjacent_out_of_map) ..
+            ' price_count=' .. tostring(probe and probe.price_count) ..
+            ' request_name=' .. tostring(probe and probe.request_name)
+        )
+    end
+    if probe.before_adjacent_out_of_map ~= false then
+        fail(force_name .. ' lake fallback probe chest still touched out-of-map')
+    end
+end
+
 local function assert_nonorbit_support(force_name, surface_name)
     local nonorbit = game.surfaces[surface_name]
     if not nonorbit then fail(surface_name .. ' support surface missing') end
@@ -551,6 +568,10 @@ local completion_context
 script.on_nth_tick(30, function()
     if not completion_context then
         assert_synced_hungry_chest_reroll()
+        assert_lake_fallback_hungry_chest('team-1')
+        assert_lake_fallback_hungry_chest('team-2')
+        remote.call('mts_expanse', 'reset', 'team-1')
+        remote.call('mts_expanse', 'reset', 'team-2')
         local team1, request1, rocket1, completion1, layout1 = assert_team('team-1')
         local team2, request2, rocket2, completion2, layout2 = assert_team('team-2')
         if team1.shared_seed ~= team2.shared_seed then
