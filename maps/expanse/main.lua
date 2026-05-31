@@ -1451,6 +1451,11 @@ local function infini_rock(entity, state, mined)
             state.rock = script.register_on_object_destroyed(newrock)
             register_state_object(state, state.rock)
         end
+        -- The pre-mine event fires before Factorio knows whether the mine will complete.
+        -- If a full inventory aborts hand-mining, the old rock survives unless we remove it.
+        if entity.valid then
+            entity.destroy()
+        end
     end
 end
 

@@ -1,4 +1,10 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.9
+Date: 31. 05. 2026
+  Bugfixes:
+    - Fixed infini rocks stacking when a player hand-mines the rock with a full inventory and
+      Factorio aborts the mine after the pre-mine handler has already spawned the replacement.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.8
 Date: 30. 05. 2026
   Bugfixes:
