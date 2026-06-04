@@ -989,8 +989,9 @@ local function sort_invasion_candidates_by_position(candidates)
     end)
 end
 
-local function plan_invasion(expanse, invasion_numbers)
-    local candidates = expanse.invasion_candidates
+local function plan_invasion(expanse, invasion_numbers, candidate_source, options)
+    options = options or {}
+    local candidates = candidate_source or expanse.invasion_candidates
     if expanse.sync_invasions ~= false then
         candidates = copy_invasion_candidates(candidates)
         sort_invasion_candidates_by_position(candidates)
@@ -1019,21 +1020,39 @@ local function plan_invasion(expanse, invasion_numbers)
         for ii = 1, rounds, 1 do
             schedule_biters(expanse, surface, position, (expanse.invasion_wave_first_delay_ticks or 120) + (ii - 1) * (expanse.invasion_wave_interval_ticks or 300), ii, i)
         end
-        candidates[i].render.time_to_live = (expanse.invasion_detonate_delay_ticks or 120 * 60) + (expanse.invasion_render_grace_ticks or 120) + rounds * (expanse.invasion_wave_interval_ticks or 300)
+        if candidates[i].render and candidates[i].render.valid then
+            candidates[i].render.time_to_live = (expanse.invasion_detonate_delay_ticks or 120 * 60) + (expanse.invasion_render_grace_ticks or 120) + rounds * (expanse.invasion_wave_interval_ticks or 300)
+        end
     end
     for j = invasion_numbers.groups + 1, #candidates, 1 do
-        candidates[j].render.time_to_live = (expanse.invasion_detonate_delay_ticks or 120 * 60) + (expanse.invasion_render_grace_ticks or 120)
+        if candidates[j].render and candidates[j].render.valid then
+            candidates[j].render.time_to_live = (expanse.invasion_detonate_delay_ticks or 120 * 60) + (expanse.invasion_render_grace_ticks or 120)
+        end
     end
-    expanse.invasion_candidates = {}
-    expanse.invasion_candidate_cells = {}
+    if options.clear_candidates ~= false then
+        expanse.invasion_candidates = {}
+        expanse.invasion_candidate_cells = {}
+    end
     expanse.invasion_tracker = expanse.invasion_tracker or {}
     expanse.invasion_tracker.pending = 0
     expanse.invasion_tracker.required = invasion_numbers.candidates
     expanse.invasion_tracker.groups = invasion_numbers.groups
     expanse.invasion_tracker.last_plan_tick = game.tick
-    expanse.invasion_tracker.last_planned_candidates = #candidates
+    expanse.invasion_tracker.last_planned_candidates = options.planned_candidates or #candidates
     expanse.invasion_tracker.last_planned_groups = invasion_numbers.groups
     expanse.invasion_tracker.scheduled_invasions = (expanse.invasion_tracker.scheduled_invasions or 0) + 1
+end
+
+function Public.plan_grandfathered_invasion(expanse, candidates, invasion_numbers, planned_candidates, options)
+    options = options or {}
+    local clear_candidates = false
+    if options.clear_candidates ~= nil then
+        clear_candidates = options.clear_candidates
+    end
+    plan_invasion(expanse, invasion_numbers, candidates, {
+        clear_candidates = clear_candidates,
+        planned_candidates = planned_candidates
+    })
 end
 
 function Public.check_invasion(expanse)

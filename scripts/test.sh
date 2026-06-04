@@ -357,6 +357,99 @@ local function assert_invasion_tracking(label)
     return probe
 end
 
+local function assert_grandfathered_invasion_migration(label)
+    local probe = remote.call('mts_expanse', 'probe_grandfathered_invasion_migration')
+    if type(probe) ~= 'table' then
+        error(label .. ': grandfathered invasion migration probe did not return a table')
+    end
+    if probe.ok ~= true then
+        local grandfathered = probe.grandfathered or {}
+        local migrated_tracker = probe.migrated_tracker or {}
+        local resume = probe.resume or {}
+        error(
+            label .. ': grandfathered invasion migration probe failed: pre_012_gate=' .. tostring(probe.pre_012_gate) ..
+            ' post_012_gate=' .. tostring(probe.post_012_gate) ..
+            ' scheduled_before=' .. tostring(probe.scheduled_before_migration) ..
+            ' scheduled_after=' .. tostring(probe.scheduled_after_migration) ..
+            ' future_event_removed=' .. tostring(probe.future_event_removed) ..
+            ' grandfathered_pending=' .. tostring(grandfathered.pending) ..
+            ' grandfathered_positions=' .. tostring(grandfathered.positions) ..
+            ' grandfathered_markers=' .. tostring(grandfathered.markers) ..
+            ' tracker_pending=' .. tostring(migrated_tracker.pending) ..
+            ' tracker_required=' .. tostring(migrated_tracker.required) ..
+            ' resume_ok=' .. tostring(resume.ok) ..
+            ' scheduled_after_resume=' .. tostring(probe.scheduled_after_resume) ..
+            ' error=' .. tostring(probe.error or resume.error)
+        )
+    end
+end
+
+local function assert_grandfathered_overflow_resume(label)
+    local probe = remote.call('mts_expanse', 'probe_grandfathered_overflow_resume')
+    if type(probe) ~= 'table' then
+        error(label .. ': grandfathered overflow resume probe did not return a table')
+    end
+    if probe.ok ~= true then
+        local tracker = probe.tracker or {}
+        error(
+            label .. ': grandfathered overflow resume probe failed: resumed=' .. tostring(probe.resumed) ..
+            ' scheduled_before=' .. tostring(probe.before_schedule) ..
+            ' scheduled_after=' .. tostring(probe.after_schedule) ..
+            ' candidates_after=' .. tostring(probe.candidates_after) ..
+            ' grandfathered_after=' .. tostring(probe.grandfathered_after) ..
+            ' tracker_pending=' .. tostring(tracker.pending) ..
+            ' tracker_groups=' .. tostring(tracker.groups) ..
+            ' last_planned_groups=' .. tostring(tracker.last_planned_groups) ..
+            ' error=' .. tostring(probe.error)
+        )
+    end
+end
+
+local function assert_spawned_invasion_cleanup_migration(label)
+    local probe = remote.call('mts_expanse', 'probe_spawned_invasion_cleanup_migration')
+    if type(probe) ~= 'table' then
+        error(label .. ': spawned invasion cleanup migration probe did not return a table')
+    end
+    if probe.ok ~= true then
+        local result = probe.result or {}
+        local repeated = probe.repeated or {}
+        local direct_grandfathered = probe.direct_grandfathered or {}
+        local direct_tracker = probe.direct_tracker or {}
+        local lazy_result = probe.lazy_result or {}
+        local lazy_repeated = probe.lazy_repeated or {}
+        local lazy_grandfathered = probe.lazy_grandfathered or {}
+        local lazy_tracker = probe.lazy_tracker or {}
+        error(
+            label .. ': spawned invasion cleanup migration probe failed: pre_012_gate=' .. tostring(probe.pre_012_gate) ..
+            ' post_012_gate=' .. tostring(probe.post_012_gate) ..
+            ' removed=' .. tostring(result.removed) ..
+            ' removed_scheduled=' .. tostring(result.removed_scheduled_events) ..
+            ' scheduled_before=' .. tostring(probe.before_cleanup_schedule) ..
+            ' scheduled_after=' .. tostring(probe.after_cleanup_schedule) ..
+            ' future_event_removed=' .. tostring(probe.future_event_removed) ..
+            ' direct_pending=' .. tostring(direct_grandfathered.pending) ..
+            ' direct_required=' .. tostring(direct_grandfathered.required) ..
+            ' direct_await_next_open=' .. tostring(direct_grandfathered.await_next_open) ..
+            ' direct_tracker_pending=' .. tostring(direct_tracker.pending) ..
+            ' direct_tracker_required=' .. tostring(direct_tracker.required) ..
+            ' skipped=' .. tostring(repeated.skipped) ..
+            ' untracked_removed=' .. tostring(probe.untracked_removed) ..
+            ' tracked_removed=' .. tostring(probe.tracked_removed) ..
+            ' far_tracked_preserved=' .. tostring(probe.far_tracked_preserved) ..
+            ' lazy_removed=' .. tostring(lazy_result.removed) ..
+            ' lazy_pending=' .. tostring(lazy_grandfathered.pending) ..
+            ' lazy_required=' .. tostring(lazy_grandfathered.required) ..
+            ' lazy_await_next_open=' .. tostring(lazy_grandfathered.await_next_open) ..
+            ' lazy_tracker_pending=' .. tostring(lazy_tracker.pending) ..
+            ' lazy_tracker_required=' .. tostring(lazy_tracker.required) ..
+            ' lazy_skipped=' .. tostring(lazy_repeated.skipped) ..
+            ' lazy_untracked_removed=' .. tostring(probe.lazy_untracked_removed) ..
+            ' lazy_tracked_removed=' .. tostring(probe.lazy_tracked_removed) ..
+            ' error=' .. tostring(probe.error)
+        )
+    end
+end
+
 local function assert_invasion_triggers(label, probe)
     local state = assert_state(label)
     local tracker = state.invasion_tracker or {}
@@ -508,7 +601,10 @@ script.on_nth_tick(
 		        assert_admin_open_variants()
 	        assert_frontier_repair()
 	        assert_vanilla_rocket_gating()
-	        assert_rocket_delivery()
+            assert_rocket_delivery()
+            assert_grandfathered_invasion_migration('after grandfathered invasion migration')
+            assert_grandfathered_overflow_resume('after grandfathered overflow resume')
+            assert_spawned_invasion_cleanup_migration('after spawned invasion cleanup migration')
             completion_context.invasion_probe = assert_invasion_tracking('after invasion tracking')
             completion_context.invasion_verify_tick = completion_context.invasion_probe.verify_tick or (game.tick + 120)
             completion_context.post_completion_probes_done = true

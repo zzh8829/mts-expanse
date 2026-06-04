@@ -1,4 +1,23 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.12
+Date: 04. 06. 2026
+  Bugfixes:
+    - Grandfathered overdue scheduled invasion backlogs from pre-0.1.12 saves so teams are not
+      attacked immediately after upgrading from the stale-teleport fix. The backlog stays visible
+      in the invasion counter and resumes on the next invasion-eligible cell open.
+    - Cleaned up already-spawned legacy invasion enemies during upgrade so saves that loaded the
+      backlog before 0.1.12 do not remain flooded with biters. Tracked cell biter camps away from
+      spawn are kept.
+    - Preserved cleaned spawned-invasion pressure in the counter and resumed it on the next
+      invasion-eligible cell open instead of silently deleting the invasion.
+    - Removed stale scheduled legacy invasion warning, explosion, and wave events when cleaning
+      already-spawned backlog enemies so the old invasion chain cannot continue.
+    - Changed grandfathered invasion overflow to fast-track the normal pending invasion pool on
+      the next eligible open, clearing the counter to 0 and preserving the full group count.
+    - Repaired missing danger icons for grandfathered invasion positions.
+    - Removed future stale scheduled invasion explosions during scheduled-backlog grandfathering,
+      preventing the old detonation chain from firing before the next eligible open.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.11
 Date: 04. 06. 2026
   Bugfixes:

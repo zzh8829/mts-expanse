@@ -22,18 +22,27 @@ local format_number = require 'util'.format_number
 local Autostash = require 'modules.autostash'
 local FT = require 'utils.functions.flying_texts'
 
-local expanse = {
-    events = {
-        gui_update = Event.generate_event_name('expanse_gui_update'),
-        mission_gui_update = Event.generate_event_name('expanse_missions_gui_update'),
-        invasion_warn = Event.generate_event_name('invasion_warn'),
-        invasion_detonate = Event.generate_event_name('invasion_detonate'),
-        invasion_trigger = Event.generate_event_name('invasion_trigger'),
-        victory = Event.generate_event_name('victory'),
-        map_reset = Event.generate_event_name('expanse_map_reset')
-    }
-}
 local Public = {}
+Public.events = {
+    gui_update = Event.generate_event_name('expanse_gui_update'),
+    mission_gui_update = Event.generate_event_name('expanse_missions_gui_update'),
+    invasion_warn = Event.generate_event_name('invasion_warn'),
+    invasion_detonate = Event.generate_event_name('invasion_detonate'),
+    invasion_trigger = Event.generate_event_name('invasion_trigger'),
+    victory = Event.generate_event_name('victory'),
+    map_reset = Event.generate_event_name('expanse_map_reset')
+}
+
+local expanse = {
+    events = Public.events
+}
+
+function Public.refresh_event_ids()
+    expanse.events = Public.events
+    for _, state in pairs(expanse.team_states or {}) do
+        state.events = Public.events
+    end
+end
 
 Global.register(
     expanse,
@@ -67,7 +76,10 @@ local FORFEIT_DIALOG_TOP_OFFSET = 72
 local reset
 local destroy_natural_enemy_entities
 local FISH_BACKFILL_VERSION = '0.1.10-fish-v2'
+local INVASION_BACKLOG_MIGRATION_VERSION = '0.1.12'
 Public.forfeit_impl = {}
+Public.invasion_impl = {}
+Public.probe_impl = {}
 
 local function startup_setting(name, default)
     local setting = settings.startup[name]
@@ -259,6 +271,7 @@ local function place_player_on_expanse_surface(player, surface, position)
 end
 
 local function ensure_indexes()
+    Public.refresh_event_ids()
     expanse.team_states = expanse.team_states or {}
     expanse.surface_to_force = expanse.surface_to_force or {}
     expanse.object_to_force = expanse.object_to_force or {}
@@ -325,7 +338,7 @@ end
 local function init_state_defaults(state, force_name)
     local config = expanse_config()
     state.force_name = force_name or state.force_name or DEFAULT_FORCE_NAME
-    state.events = expanse.events
+    state.events = Public.events
     state.surface_name = state.surface_name or state_surface_name(state.force_name)
     state.planet_key = planet_rng_key(state.surface_name)
     local desired_source_surface = state_source_surface_name(state.force_name)
@@ -383,6 +396,7 @@ local function init_state_defaults(state, force_name)
     state.use_space_platform = config.use_space_platform
     state.nonspace_support_size = config.nonspace_support_size
     state.rocket_launch_weight_threshold = config.rocket_launch_weight_threshold
+    state.schedule = state.schedule or {}
     state.cell_biter_units = state.cell_biter_units or {}
     state.cell_biter_tracker = state.cell_biter_tracker or {}
     state.forfeit_history = state.forfeit_history or {}
@@ -1029,7 +1043,7 @@ reset = function(state)
         game.reset_time_played()
     end
     if SpaceMissions.enabled() then
-        script.raise_event(expanse.events.mission_gui_update, { force_name = state_key(state) })
+        script.raise_event(Public.events.mission_gui_update, { force_name = state_key(state) })
     end
 end
 
@@ -1237,13 +1251,373 @@ local function invasion_cell_key(left_top)
     return tostring(left_top.x .. '_' .. left_top.y)
 end
 
+function Public.invasion_impl.draw_invasion_marker(surface, position)
+    if not (surface and surface.valid and position) then
+        return nil
+    end
+    return rendering.draw_sprite {
+        sprite = 'utility/danger_icon',
+        surface = surface,
+        target = position,
+        x_scale = 2,
+        y_scale = 2
+    }
+end
+
+function Public.invasion_impl.copy_invasion_candidate(candidate)
+    if not (candidate and candidate.surface_index and candidate.position) then
+        return nil
+    end
+    return {
+        surface_index = candidate.surface_index,
+        position = { x = candidate.position.x, y = candidate.position.y },
+        render = candidate.render,
+        left_top = candidate.left_top and { x = candidate.left_top.x, y = candidate.left_top.y } or nil
+    }
+end
+
+function Public.invasion_impl.pad_invasion_candidates_to_groups(candidates, groups)
+    local original_count = #candidates
+    if original_count == 0 then
+        return
+    end
+    local index = 1
+    while #candidates < groups do
+        local candidate = Public.invasion_impl.copy_invasion_candidate(candidates[index])
+        if not candidate then
+            return
+        end
+        candidates[#candidates + 1] = candidate
+        index = index + 1
+        if index > original_count then
+            index = 1
+        end
+    end
+end
+
 local function invasion_tracker(state)
     state.invasion_tracker = state.invasion_tracker or {}
     return state.invasion_tracker
 end
 
+local sync_invasion_tracker
+
 local function is_invasion_schedule_event(stuff)
     return stuff and (stuff.event == 'invasion_warn' or stuff.event == 'invasion_detonate' or stuff.event == 'invasion_trigger')
+end
+
+function Public.invasion_impl.version_parts(version)
+    local parts = {}
+    for part in tostring(version or ''):gmatch('%d+') do
+        parts[#parts + 1] = tonumber(part) or 0
+    end
+    return parts
+end
+
+function Public.invasion_impl.version_less_than(left, right)
+    local a = Public.invasion_impl.version_parts(left)
+    local b = Public.invasion_impl.version_parts(right)
+    local len = math.max(#a, #b)
+    for i = 1, len, 1 do
+        local av = a[i] or 0
+        local bv = b[i] or 0
+        if av ~= bv then
+            return av < bv
+        end
+    end
+    return false
+end
+
+function Public.invasion_impl.should_grandfather_backlog(event)
+    local change = event and event.mod_changes and event.mod_changes['mts-expanse']
+    return change and change.old_version and Public.invasion_impl.version_less_than(change.old_version, INVASION_BACKLOG_MIGRATION_VERSION)
+end
+
+function Public.invasion_impl.should_cleanup_spawned_backlog(event)
+    local change = event and event.mod_changes and event.mod_changes['mts-expanse']
+    return change and change.old_version and Public.invasion_impl.version_less_than(change.old_version, INVASION_BACKLOG_MIGRATION_VERSION)
+end
+
+function Public.invasion_impl.saved_pending_count(state)
+    local saved = state and state.grandfathered_invasion
+    if not saved then
+        return 0
+    end
+    if saved.await_next_open and tonumber(saved.pending) and tonumber(saved.pending) > 0 then
+        return tonumber(saved.pending)
+    end
+    if not (saved.positions and next(saved.positions)) then
+        return 0
+    end
+    return math.max(tonumber(saved.pending) or 0, #saved.positions)
+end
+
+function Public.invasion_impl.pending_count(state)
+    return #(state.invasion_candidates or {}) + Public.invasion_impl.saved_pending_count(state)
+end
+
+function Public.invasion_impl.ensure_grandfathered_markers(state)
+    local saved = state and state.grandfathered_invasion
+    if not (saved and saved.positions) then
+        return 0
+    end
+
+    local repaired = 0
+    for _, entry in pairs(saved.positions) do
+        local surface = entry.surface_index and game.get_surface(entry.surface_index) or nil
+        if surface and surface.valid and entry.position then
+            entry.left_top = entry.left_top or position_cell_left_top(state, entry.position)
+            if not (entry.render and entry.render.valid) then
+                entry.render = Public.invasion_impl.draw_invasion_marker(surface, entry.position)
+                if entry.render then
+                    repaired = repaired + 1
+                end
+            end
+        end
+    end
+    return repaired
+end
+
+function Public.invasion_impl.destroy_grandfathered_markers(saved)
+    for _, entry in pairs((saved and saved.positions) or {}) do
+        if entry.render and entry.render.valid then
+            entry.render.destroy()
+        end
+    end
+end
+
+function Public.invasion_impl.schedule_surface_index(parameters)
+    local surface = parameters and parameters.surface
+    if type(surface) == 'number' then
+        return surface
+    end
+    if type(surface) == 'string' then
+        local named = game.get_surface(surface)
+        return named and named.index or nil
+    end
+    if surface then
+        local ok, valid = pcall(function() return surface.valid end)
+        if ok and valid then
+            return surface.index
+        end
+    end
+    return nil
+end
+
+function Public.invasion_impl.copy_schedule_position(parameters)
+    local position = parameters and parameters.position
+    if not position then
+        return nil
+    end
+    return { x = position.x, y = position.y }
+end
+
+function Public.invasion_impl.schedule_position_key(surface_index, position)
+    if not (surface_index and position) then
+        return nil
+    end
+    return tostring(surface_index) .. ':' .. tostring(position.x) .. ':' .. tostring(position.y)
+end
+
+function Public.invasion_impl.migration_state(state)
+    state.migrations = state.migrations or {}
+    return state.migrations
+end
+
+function Public.invasion_impl.remove_scheduled_invasion_events(state)
+    local kept_schedule = {}
+    local removed_events = 0
+    for _, stuff in pairs(state.schedule or {}) do
+        if is_invasion_schedule_event(stuff) then
+            removed_events = removed_events + 1
+        else
+            kept_schedule[#kept_schedule + 1] = stuff
+        end
+    end
+    state.schedule = kept_schedule
+    return removed_events
+end
+
+function Public.invasion_impl.migrate_backlog_for_state(state)
+    if not (state and state.active_surface_index and game.surfaces[state.active_surface_index]) then
+        return { migrated = false, skipped = 'missing active surface' }
+    end
+    local migrations = Public.invasion_impl.migration_state(state)
+    if migrations.invasion_backlog_grandfathered then
+        return { migrated = false, skipped = 'already migrated' }
+    end
+    migrations.invasion_backlog_grandfathered = INVASION_BACKLOG_MIGRATION_VERSION
+
+    local schedule = state.schedule or {}
+    local affected_positions = {}
+    local affected_keys = {}
+    local scheduled_events = 0
+    local overdue_events = 0
+    for _, stuff in pairs(schedule) do
+        if is_invasion_schedule_event(stuff) then
+            scheduled_events = scheduled_events + 1
+            if stuff.tick and stuff.tick <= game.tick then
+                overdue_events = overdue_events + 1
+            end
+            local parameters = stuff.parameters or {}
+            local surface_index = Public.invasion_impl.schedule_surface_index(parameters)
+            local position = Public.invasion_impl.copy_schedule_position(parameters)
+            local key = Public.invasion_impl.schedule_position_key(surface_index, position)
+            if key and not affected_keys[key] then
+                affected_keys[key] = true
+                affected_positions[#affected_positions + 1] = {
+                    surface_index = surface_index,
+                    position = position
+                }
+            end
+        end
+    end
+
+    if scheduled_events == 0 or #affected_positions == 0 then
+        return {
+            migrated = false,
+            skipped = scheduled_events == 0 and 'no scheduled invasion events' or 'no recoverable invasion positions',
+            scheduled_events = scheduled_events,
+            overdue_events = overdue_events
+        }
+    end
+
+    table.sort(affected_positions, function(a, b)
+        if a.surface_index ~= b.surface_index then
+            return a.surface_index < b.surface_index
+        end
+        if a.position.x ~= b.position.x then
+            return a.position.x < b.position.x
+        end
+        return a.position.y < b.position.y
+    end)
+    for _, entry in pairs(affected_positions) do
+        local surface = entry.surface_index and game.get_surface(entry.surface_index) or nil
+        if surface and surface.valid and entry.position then
+            entry.left_top = position_cell_left_top(state, entry.position)
+            entry.render = Public.invasion_impl.draw_invasion_marker(surface, entry.position)
+        end
+    end
+
+    local kept_schedule = {}
+    local removed_events = 0
+    for _, stuff in pairs(schedule) do
+        local remove = false
+        if is_invasion_schedule_event(stuff) then
+            remove = true
+        end
+        if remove then
+            removed_events = removed_events + 1
+        else
+            kept_schedule[#kept_schedule + 1] = stuff
+        end
+    end
+    state.schedule = kept_schedule
+
+    local tracker = invasion_tracker(state)
+    local invasion_numbers = Functions.invasion_numbers(state)
+    state.grandfathered_invasion = {
+        migration_version = INVASION_BACKLOG_MIGRATION_VERSION,
+        migrated_tick = game.tick,
+        positions = affected_positions,
+        pending = math.max(tonumber(tracker.last_planned_candidates) or 0, #affected_positions),
+        required = invasion_numbers.candidates,
+        groups = math.max(1, tonumber(tracker.last_planned_groups) or invasion_numbers.groups),
+        removed_events = removed_events,
+        overdue_events = overdue_events
+    }
+    sync_invasion_tracker(state)
+    return {
+        migrated = true,
+        positions = #affected_positions,
+        removed_events = removed_events,
+        scheduled_events = scheduled_events,
+        overdue_events = overdue_events,
+        pending = state.grandfathered_invasion.pending
+    }
+end
+
+function Public.invasion_impl.cleanup_spawned_backlog_for_state(state)
+    local surface = state and state.active_surface_index and game.surfaces[state.active_surface_index] or nil
+    if not (surface and surface.valid) then
+        return { migrated = false, skipped = 'missing active surface' }
+    end
+    local migrations = Public.invasion_impl.migration_state(state)
+    if migrations.spawned_invasion_backlog_cleanup_complete and migrations.spawned_invasion_backlog_cleaned_surface == surface.name then
+        return { migrated = false, skipped = 'already migrated' }
+    end
+    migrations.spawned_invasion_backlog_cleanup_attempts = migrations.spawned_invasion_backlog_cleanup_attempts or {}
+    local attempts = (migrations.spawned_invasion_backlog_cleanup_attempts[surface.name] or 0) + 1
+    migrations.spawned_invasion_backlog_cleanup_attempts[surface.name] = attempts
+
+    local removed = destroy_natural_enemy_entities and destroy_natural_enemy_entities(surface, nil, state) or 0
+    local force = state_force(state)
+    local spawn = force and force.valid and force.get_spawn_position(surface) or { x = (state.square_size or 15) * 0.5, y = (state.square_size or 15) * 0.5 }
+    local radius = math.max(96, (state.square_size or 15) * 8)
+    local spawn_removed = 0
+    local function cleanup_area_around(position)
+        if not (destroy_natural_enemy_entities and position) then
+            return 0
+        end
+        return destroy_natural_enemy_entities(surface, {
+            { position.x - radius, position.y - radius },
+            { position.x + radius, position.y + radius }
+        }) or 0
+    end
+    spawn_removed = spawn_removed + cleanup_area_around(spawn)
+    for _, player in pairs(state_players(state)) do
+        if player.valid and player.surface == surface then
+            spawn_removed = spawn_removed + cleanup_area_around(player.character and player.character.valid and player.character.position or player.position)
+        end
+    end
+    removed = removed + spawn_removed
+    local removed_scheduled_events = 0
+    if removed > 0 then
+        removed_scheduled_events = Public.invasion_impl.remove_scheduled_invasion_events(state)
+    end
+    if removed > 0 or attempts >= 10 then
+        migrations.spawned_invasion_backlog_cleaned = INVASION_BACKLOG_MIGRATION_VERSION
+        migrations.spawned_invasion_backlog_cleanup_complete = true
+        migrations.spawned_invasion_backlog_cleaned_surface = surface.name
+    end
+    local tracker = invasion_tracker(state)
+    local invasion_numbers = Functions.invasion_numbers(state)
+    if removed > 0 and not state.grandfathered_invasion then
+        state.grandfathered_invasion = {
+            migration_version = INVASION_BACKLOG_MIGRATION_VERSION,
+            migrated_tick = game.tick,
+            positions = {},
+            await_next_open = true,
+            pending = math.max(tonumber(tracker.pending) or 0, invasion_numbers.candidates),
+            required = invasion_numbers.candidates,
+            groups = math.max(1, invasion_numbers.groups),
+            removed_events = removed_scheduled_events,
+            overdue_events = 0,
+            spawned_cleanup_removed = removed
+        }
+    end
+    tracker.last_spawned_backlog_cleanup_tick = game.tick
+    tracker.last_spawned_backlog_cleanup_removed = removed
+    tracker.last_spawned_backlog_spawn_cleanup_removed = spawn_removed
+    tracker.last_spawned_backlog_cleanup_removed_scheduled_events = removed_scheduled_events
+    tracker.last_spawned_backlog_cleanup_attempts = attempts
+    sync_invasion_tracker(state)
+    return {
+        migrated = removed > 0,
+        removed = removed,
+        removed_scheduled_events = removed_scheduled_events,
+        spawn_removed = spawn_removed,
+        surface_name = surface.name
+    }
+end
+
+function Public.invasion_impl.ensure_spawned_backlog_cleanup(state)
+    local result = Public.invasion_impl.cleanup_spawned_backlog_for_state(state)
+    if result.removed and result.removed > 0 then
+        log('[mts-expanse] cleaned ' .. result.removed .. ' already-spawned legacy invasion enemy entity/entities from ' .. state_key(state) .. ' on ' .. tostring(result.surface_name))
+        script.raise_event(Public.events.gui_update, { force_name = state_key(state) })
+    end
+    return result
 end
 
 function Public.forfeit_impl.state_from_player_force(player)
@@ -1473,6 +1847,8 @@ function Public.forfeit_impl.clear_invasion_state(state)
     state.schedule = kept_schedule
     state.invasion_candidates = {}
     state.invasion_candidate_cells = {}
+    Public.invasion_impl.destroy_grandfathered_markers(state.grandfathered_invasion)
+    state.grandfathered_invasion = nil
     state.invasion_tracker = {
         pending = 0,
         required = 0,
@@ -1570,9 +1946,9 @@ function Public.forfeit_impl.run(state, player)
     Public.forfeit_impl.clear_deaths_for_force(state_key(state))
 
     game.print({'expanse.forfeit_done', player and player.valid and player.name or 'Server', counts.buildings, counts.enemies, counts.inventory_items, force.name}, { r = 0.4, g = 0.85, b = 1 })
-    script.raise_event(expanse.events.gui_update, { force_name = state_key(state) })
+    script.raise_event(Public.events.gui_update, { force_name = state_key(state) })
     if SpaceMissions.enabled() then
-        script.raise_event(expanse.events.mission_gui_update, { force_name = state_key(state) })
+        script.raise_event(Public.events.mission_gui_update, { force_name = state_key(state) })
     end
     return counts
 end
@@ -1621,11 +1997,28 @@ local function count_scheduled_invasion_events(state)
     return count, next_tick
 end
 
-local function sync_invasion_tracker(state)
+function Public.invasion_impl.scheduled_invasion_parameters_valid(stuff)
+    if not is_invasion_schedule_event(stuff) then
+        return true
+    end
+    if stuff.event == 'invasion_warn' then
+        return true
+    end
+    local parameters = stuff.parameters or {}
+    return Public.invasion_impl.schedule_surface_index(parameters) ~= nil and parameters.position ~= nil
+end
+
+sync_invasion_tracker = function(state)
     local tracker = invasion_tracker(state)
-    local invasion_numbers = Functions.invasion_numbers(state)
+    local surface = state and state.active_surface_index and game.surfaces[state.active_surface_index] or nil
+    local invasion_numbers = surface and Functions.invasion_numbers(state) or {
+        candidates = state and state.invasion_candidate_base or 3,
+        groups = state and state.invasion_group_base or 1
+    }
     local scheduled_events, next_scheduled_tick = count_scheduled_invasion_events(state)
-    tracker.pending = #(state.invasion_candidates or {})
+    tracker.current_pending = #(state.invasion_candidates or {})
+    tracker.grandfathered_pending = Public.invasion_impl.saved_pending_count(state)
+    tracker.pending = Public.invasion_impl.pending_count(state)
     tracker.required = invasion_numbers.candidates
     tracker.groups = invasion_numbers.groups
     tracker.scheduled_events = scheduled_events
@@ -1663,6 +2056,138 @@ local function expected_synced_invasion_candidate(state, expansion_position)
     return Functions.cell_random_int(state, left_top, 7001, 4) == 1
 end
 
+function Public.invasion_impl.ensure_open_invasion_candidate(state, surface, expansion_position)
+    state.invasion_candidates = state.invasion_candidates or {}
+    state.invasion_candidate_cells = state.invasion_candidate_cells or {}
+    local left_top = position_cell_left_top(state, expansion_position)
+    local key = invasion_cell_key(left_top)
+    if state.invasion_candidate_cells[key] then
+        return false
+    end
+
+    local render = Public.invasion_impl.draw_invasion_marker(surface, expansion_position)
+    local cell = state.sync_invasions ~= false and Functions.ensure_meta_cell(state, left_top) or nil
+    if cell then
+        cell.invasion_candidate = true
+        cell.invasion_position = { x = expansion_position.x, y = expansion_position.y }
+    end
+    state.invasion_candidate_cells[key] = true
+    table.insert(state.invasion_candidates, {
+        surface_index = surface.index,
+        position = { x = expansion_position.x, y = expansion_position.y },
+        render = render,
+        left_top = left_top
+    })
+    local tracker = invasion_tracker(state)
+    tracker.last_candidate_tick = game.tick
+    tracker.last_candidate = { x = expansion_position.x, y = expansion_position.y }
+    return true
+end
+
+function Public.invasion_impl.collect_saved_invasion_candidates(state, saved)
+    local candidates = {}
+    for _, entry in pairs(saved.positions or {}) do
+        local surface = entry.surface_index and game.get_surface(entry.surface_index) or nil
+        local position = entry.position
+        if surface and surface.valid and position then
+            entry.left_top = entry.left_top or position_cell_left_top(state, position)
+            if not (entry.render and entry.render.valid) then
+                entry.render = Public.invasion_impl.draw_invasion_marker(surface, position)
+            end
+            candidates[#candidates + 1] = {
+                surface_index = surface.index,
+                position = { x = position.x, y = position.y },
+                render = entry.render,
+                left_top = entry.left_top
+            }
+        end
+    end
+    return candidates
+end
+
+function Public.invasion_impl.append_current_invasion_candidates(state, candidates)
+    local seen = {}
+    for _, candidate in pairs(candidates) do
+        local key = Public.invasion_impl.schedule_position_key(candidate.surface_index, candidate.position)
+        if key then
+            seen[key] = true
+        end
+    end
+
+    for _, candidate in pairs(state.invasion_candidates or {}) do
+        local surface = candidate.surface_index and game.get_surface(candidate.surface_index) or nil
+        local position = candidate.position
+        if surface and surface.valid and position then
+            candidate.left_top = candidate.left_top or position_cell_left_top(state, position)
+            if not (candidate.render and candidate.render.valid) then
+                candidate.render = Public.invasion_impl.draw_invasion_marker(surface, position)
+            end
+            local key = Public.invasion_impl.schedule_position_key(surface.index, position)
+            if key and not seen[key] then
+                seen[key] = true
+                candidates[#candidates + 1] = {
+                    surface_index = surface.index,
+                    position = { x = position.x, y = position.y },
+                    render = candidate.render,
+                    left_top = candidate.left_top
+                }
+            end
+        end
+    end
+end
+
+local function resume_grandfathered_invasion(state, expansion_position)
+    local saved = state.grandfathered_invasion
+    if not saved then
+        return false
+    end
+
+    local surface = state.active_surface_index and game.surfaces[state.active_surface_index] or nil
+    if saved.await_next_open and surface and surface.valid and expansion_position then
+        Public.invasion_impl.ensure_open_invasion_candidate(state, surface, expansion_position)
+    end
+
+    local candidates = Public.invasion_impl.collect_saved_invasion_candidates(state, saved)
+    Public.invasion_impl.append_current_invasion_candidates(state, candidates)
+
+    if #candidates == 0 and surface and surface.valid and expansion_position then
+        Public.invasion_impl.ensure_open_invasion_candidate(state, surface, expansion_position)
+        Public.invasion_impl.append_current_invasion_candidates(state, candidates)
+    end
+
+    if #candidates == 0 then
+        if saved.positions and next(saved.positions) then
+            Public.invasion_impl.ensure_grandfathered_markers(state)
+            sync_invasion_tracker(state)
+            return false
+        end
+        state.grandfathered_invasion = nil
+        sync_invasion_tracker(state)
+        return false
+    end
+
+    local invasion_numbers = Functions.invasion_numbers(state)
+    local groups = math.max(1, tonumber(saved.groups) or invasion_numbers.groups)
+    Public.invasion_impl.pad_invasion_candidates_to_groups(candidates, groups)
+    Functions.plan_grandfathered_invasion(
+        state,
+        candidates,
+        {
+            candidates = tonumber(saved.required) or invasion_numbers.candidates,
+            groups = groups
+        },
+        tonumber(saved.pending) or #candidates,
+        { clear_candidates = true }
+    )
+    state.grandfathered_invasion = nil
+    local tracker = invasion_tracker(state)
+    tracker.last_grandfathered_resume_tick = game.tick
+    tracker.last_grandfathered_positions = #candidates
+    tracker.last_grandfathered_await_next_open = saved.await_next_open == true
+    sync_invasion_tracker(state)
+    return true, candidates
+end
+
 local function handle_completed_container(state, expansion_position, player)
     local surface = game.surfaces[state.active_surface_index]
     if not surface or not surface.valid then return end
@@ -1685,31 +2210,17 @@ local function handle_completed_container(state, expansion_position, player)
         if surface.count_tiles_filtered({ position = expansion_position, radius = 6, collision_mask = 'water_tile' }) > 40 then
             tracker.last_blocked_water_tick = game.tick
         else
-            local left_top = position_cell_left_top(state, expansion_position)
-            local key = invasion_cell_key(left_top)
-            if not state.invasion_candidate_cells[key] then
-                local render = rendering.draw_sprite {
-                    sprite = 'utility/danger_icon',
-                    surface = surface,
-                    target = expansion_position,
-                    x_scale = 2,
-                    y_scale = 2
-                }
-                local cell = state.sync_invasions ~= false and Functions.ensure_meta_cell(state, left_top) or nil
-                if cell then
-                    cell.invasion_candidate = true
-                    cell.invasion_position = { x = expansion_position.x, y = expansion_position.y }
-                end
-                state.invasion_candidate_cells[key] = true
-                table.insert(state.invasion_candidates, { surface_index = surface.index, position = expansion_position, render = render, left_top = left_top })
-                tracker.last_candidate_tick = game.tick
-                tracker.last_candidate = { x = expansion_position.x, y = expansion_position.y }
+            if resume_grandfathered_invasion(state, expansion_position) then
+                tracker.last_grandfathered_trigger_tick = game.tick
+                goto invasion_done
             end
+            Public.invasion_impl.ensure_open_invasion_candidate(state, surface, expansion_position)
             Functions.check_invasion(state)
         end
     end
+    ::invasion_done::
     sync_invasion_tracker(state)
-    script.raise_event(expanse.events.gui_update, { force_name = state_key(state) })
+    script.raise_event(Public.events.gui_update, { force_name = state_key(state) })
 end
 
 local function container_opened(event)
@@ -2239,7 +2750,55 @@ local function map_reset(event)
     reset(state)
 end
 
-local function on_configuration_changed(_event)
+local function run_invasion_backlog_migration(event)
+    if not Public.invasion_impl.should_grandfather_backlog(event) then
+        return
+    end
+
+    local migrated = 0
+    local removed_events = 0
+    local result = Public.invasion_impl.migrate_backlog_for_state(expanse)
+    if result.migrated then
+        migrated = migrated + 1
+        removed_events = removed_events + (result.removed_events or 0)
+    end
+
+    for _, state in iter_states() do
+        result = Public.invasion_impl.migrate_backlog_for_state(state)
+        if result.migrated then
+            migrated = migrated + 1
+            removed_events = removed_events + (result.removed_events or 0)
+        end
+    end
+
+    if migrated > 0 then
+        log('[mts-expanse] grandfathered invasion backlog for ' .. migrated .. ' state(s), removed ' .. removed_events .. ' overdue scheduled invasion event(s)')
+        script.raise_event(Public.events.gui_update, {})
+    end
+end
+
+function Public.invasion_impl.run_spawned_invasion_cleanup_migration(event)
+    if not Public.invasion_impl.should_cleanup_spawned_backlog(event) then
+        return
+    end
+
+    local states_cleaned = 0
+    local removed = 0
+    for _, state in iter_states() do
+        local result = Public.invasion_impl.cleanup_spawned_backlog_for_state(state)
+        if result.removed and result.removed > 0 then
+            states_cleaned = states_cleaned + 1
+            removed = removed + result.removed
+        end
+    end
+
+    if removed > 0 then
+        log('[mts-expanse] cleaned ' .. removed .. ' already-spawned invasion enemy entity/entities from ' .. states_cleaned .. ' state(s)')
+        script.raise_event(Public.events.gui_update, {})
+    end
+end
+
+local function on_configuration_changed(event)
     ensure_indexes()
     init_state_defaults(expanse, DEFAULT_FORCE_NAME)
     if not expanse.active_surface_index or not game.surfaces[expanse.active_surface_index] then
@@ -2264,8 +2823,10 @@ local function on_configuration_changed(_event)
         end
         schedule_mts_nauvis_cleanup(state, 120)
     end
+    run_invasion_backlog_migration(event)
+    Public.invasion_impl.run_spawned_invasion_cleanup_migration(event)
     if SpaceMissions.enabled() then
-        script.raise_event(expanse.events.mission_gui_update, {})
+        script.raise_event(Public.events.mission_gui_update, {})
     end
     setup_mts_events()
 end
@@ -2278,9 +2839,9 @@ local function on_runtime_mod_setting_changed(event)
         init_state_defaults(state, state_key(state))
     end
     apply_world_settings()
-    script.raise_event(expanse.events.gui_update, {})
+    script.raise_event(Public.events.gui_update, {})
     if SpaceMissions.enabled() then
-        script.raise_event(expanse.events.mission_gui_update, {})
+        script.raise_event(Public.events.mission_gui_update, {})
     end
 end
 
@@ -2396,32 +2957,43 @@ local function process_state_schedule(state)
     if not next(state.schedule or {}) then return end
     local invasion_schedule_changed = false
     for index, stuff in pairs(state.schedule) do
-        if game.tick >= stuff.tick then
+        if game.tick >= (tonumber(stuff.tick) or 0) then
             stuff.parameters = stuff.parameters or {}
             stuff.parameters.force_name = stuff.parameters.force_name or state_key(state)
-            if stuff.event == 'invasion_detonate' then
+            local event_id = Public.events[stuff.event]
+            if not event_id then
+                state.schedule[index] = nil
+            elseif not Public.invasion_impl.scheduled_invasion_parameters_valid(stuff) then
+                local tracker = invasion_tracker(state)
+                tracker.skipped_invalid_scheduled_invasion_events = (tracker.skipped_invalid_scheduled_invasion_events or 0) + 1
+                tracker.last_skipped_invalid_schedule_tick = game.tick
+                invasion_schedule_changed = true
+                state.schedule[index] = nil
+            else
+                if stuff.event == 'invasion_detonate' then
                 local tracker = invasion_tracker(state)
                 tracker.last_detonate_tick = game.tick
                 tracker.detonated_events = (tracker.detonated_events or 0) + 1
                 invasion_schedule_changed = true
-            elseif stuff.event == 'invasion_trigger' then
+                elseif stuff.event == 'invasion_trigger' then
                 local tracker = invasion_tracker(state)
                 tracker.last_trigger_tick = game.tick
                 tracker.triggered_events = (tracker.triggered_events or 0) + 1
                 invasion_schedule_changed = true
-            elseif stuff.event == 'invasion_warn' then
+                elseif stuff.event == 'invasion_warn' then
                 local tracker = invasion_tracker(state)
                 tracker.last_warning_tick = game.tick
                 tracker.warning_events = (tracker.warning_events or 0) + 1
                 invasion_schedule_changed = true
+                end
+                script.raise_event(event_id, stuff.parameters)
+                state.schedule[index] = nil
             end
-            script.raise_event(state.events and state.events[stuff.event] or expanse.events[stuff.event], stuff.parameters)
-            state.schedule[index] = nil
         end
     end
     if invasion_schedule_changed then
         sync_invasion_tracker(state)
-        script.raise_event(expanse.events.gui_update, { force_name = state_key(state) })
+        script.raise_event(Public.events.gui_update, { force_name = state_key(state) })
     end
 end
 
@@ -2503,7 +3075,7 @@ local function update_overlay(state)
     local cells    = math.max(0, (state.size or 1) - 1)
 
     o.invasion = set_overlay_line(o.invasion, surface, x, -2.0, 1.5,
-        { 'expanse.stats_attack', #(state.invasion_candidates or {}),
+        { 'expanse.stats_attack', Public.invasion_impl.pending_count(state),
           invasion.candidates, invasion.groups })
     o.cells = set_overlay_line(o.cells, surface, x, -3.6, 1.5,
         { 'expanse.overlay_cells', cells })
@@ -2526,6 +3098,8 @@ local function process_state_tick(state)
     if not state.active_surface_index or not game.surfaces[state.active_surface_index] then
         return
     end
+    Public.invasion_impl.ensure_spawned_backlog_cleanup(state)
+    Public.invasion_impl.ensure_grandfathered_markers(state)
     update_overlay(state)
     if state.fish_backfill_version ~= FISH_BACKFILL_VERSION then
         local fish_backfill = Functions.ensure_open_cell_fish(state, 64)
@@ -2587,7 +3161,7 @@ local function create_main_frame(player)
     frame.style.maximal_height = 600
     local invasion_numbers = Functions.invasion_numbers(state)
     inside_frame.add({ type = 'label', name = 'size', caption = { 'expanse.stats_size', state.size or 1 } })
-    inside_frame.add({ type = 'label', name = 'biters', caption = { 'expanse.stats_attack', #state.invasion_candidates, invasion_numbers.candidates, invasion_numbers.groups } })
+    inside_frame.add({ type = 'label', name = 'biters', caption = { 'expanse.stats_attack', Public.invasion_impl.pending_count(state), invasion_numbers.candidates, invasion_numbers.groups } })
     local scroll = inside_frame.add({ type = 'scroll-pane', name = 'scroll_pane', horizontal_scroll_policy = 'never', vertical_scroll_policy = 'auto-and-reserve-space' })
 
     local frame_table = scroll.add({ type = 'table', name = 'resource_stats', column_count = 8 })
@@ -2609,7 +3183,7 @@ local function update_resource_gui(event)
             local frame = player.gui.screen[main_frame_name]['inside_frame']
             local invasion_numbers = Functions.invasion_numbers(state)
             frame['size'].caption = { 'expanse.stats_size', state.size or 1 }
-            frame['biters'].caption = { 'expanse.stats_attack', #state.invasion_candidates, invasion_numbers.candidates, invasion_numbers.groups }
+            frame['biters'].caption = { 'expanse.stats_attack', Public.invasion_impl.pending_count(state), invasion_numbers.candidates, invasion_numbers.groups }
             if event.item and event.quality then
                 local frame_table = frame['scroll_pane']['resource_stats']
                 local count = state.cost_stats[Functions.make_key(event.item, event.quality)] or 0
@@ -3014,7 +3588,7 @@ end
 local function print_admin_open_result(state, player, opened, limited)
     local suffix = limited and ' Limit reached; run the command again to continue.' or ''
     state_print(state, (player.name or 'Server') .. ' admin-opened ' .. opened .. ' Expanse cell(s).' .. suffix)
-    script.raise_event(expanse.events.gui_update, { force_name = state_key(state) })
+    script.raise_event(Public.events.gui_update, { force_name = state_key(state) })
 end
 
 local function run_admin_open_batch(state, open_fn)
@@ -4402,7 +4976,506 @@ commands.add_command(
         }
     end
 
-    local function valid_container_targets(state)
+    local function remove_probe_invasion_schedule(state)
+        local kept = {}
+        local removed = 0
+        for _, stuff in pairs(state.schedule or {}) do
+            if is_invasion_schedule_event(stuff) then
+                removed = removed + 1
+            else
+                kept[#kept + 1] = stuff
+            end
+        end
+        state.schedule = kept
+        return removed
+    end
+
+    function Public.probe_grandfathered_invasion_migration(force_name)
+        local state = force_name and state_from_force_name(force_name) or expanse
+        ensure_state_ready(state)
+        local surface = game.surfaces[state.active_surface_index]
+        if not (surface and surface.valid) then
+            return { ok = false, error = 'missing active surface', force_name = state_key(state) }
+        end
+
+        local config_snapshot = snapshot_invasion_probe_config(state)
+        configure_fast_invasion_probe(state)
+        remove_probe_invasion_schedule(state)
+        state.invasion_candidates = {}
+        state.invasion_candidate_cells = {}
+        state.grandfathered_invasion = nil
+        state.migrations = state.migrations or {}
+        state.migrations.invasion_backlog_grandfathered = nil
+        state.invasion_tracker = state.invasion_tracker or {}
+        sync_invasion_tracker(state)
+
+        local before_warning_events = state.invasion_tracker.warning_events or 0
+        local before_detonated_events = state.invasion_tracker.detonated_events or 0
+        local before_triggered_events = state.invasion_tracker.triggered_events or 0
+        local center = { x = state.square_size * 0.5, y = state.square_size * 0.5 }
+        local scheduled_positions = {
+            { x = center.x + state.square_size * 2, y = center.y },
+            { x = center.x + state.square_size * 3, y = center.y },
+            { x = center.x + state.square_size * 4, y = center.y },
+            { x = center.x + state.square_size * 5, y = center.y }
+        }
+        state.invasion_tracker.last_planned_candidates = #scheduled_positions
+        state.invasion_tracker.last_planned_groups = 4
+        table.insert(state.schedule, {
+            tick = game.tick - 1,
+            event = 'invasion_warn',
+            parameters = {
+                force_name = state_key(state),
+                size = 4,
+                delay = 0,
+                total_delay_ticks = 600
+            }
+        })
+        table.insert(state.schedule, {
+            tick = game.tick - 1,
+            event = 'invasion_detonate',
+            parameters = {
+                force_name = state_key(state),
+                surface = surface.index,
+                position = scheduled_positions[1],
+                kill_radius = 8
+            }
+        })
+        table.insert(state.schedule, {
+            tick = game.tick - 1,
+            event = 'invasion_trigger',
+            parameters = {
+                force_name = state_key(state),
+                surface = surface.index,
+                position = scheduled_positions[2],
+                round = 1
+            }
+        })
+
+        local future_event = {
+            tick = game.tick + 600,
+            event = 'invasion_detonate',
+            parameters = {
+                force_name = state_key(state),
+                surface = surface.index,
+                position = scheduled_positions[3],
+                kill_radius = 8
+            }
+        }
+        table.insert(state.schedule, future_event)
+        table.insert(state.schedule, {
+            tick = game.tick + 900,
+            event = 'invasion_trigger',
+            parameters = {
+                force_name = state_key(state),
+                surface = surface.index,
+                position = scheduled_positions[4],
+                round = 1
+            }
+        })
+
+        local scheduled_before_migration = count_scheduled_invasion_events(state)
+        local regular = { ok = true, synthetic = true }
+        local admin = { ok = true, synthetic = true }
+
+        local pre_012_gate = Public.invasion_impl.should_grandfather_backlog({
+            mod_changes = {
+                ['mts-expanse'] = {
+                    old_version = '0.1.11',
+                    new_version = INVASION_BACKLOG_MIGRATION_VERSION
+                }
+            }
+        })
+        local post_012_gate = Public.invasion_impl.should_grandfather_backlog({
+            mod_changes = {
+                ['mts-expanse'] = {
+                    old_version = INVASION_BACKLOG_MIGRATION_VERSION,
+                    new_version = '0.1.13'
+                }
+            }
+        })
+
+        local migration = Public.invasion_impl.migrate_backlog_for_state(state)
+        local migrated_tracker = shallow_copy(sync_invasion_tracker(state))
+        local scheduled_after_migration = count_scheduled_invasion_events(state)
+        local future_event_removed = true
+        for _, stuff in pairs(state.schedule or {}) do
+            if stuff == future_event then
+                future_event_removed = false
+                break
+            end
+        end
+        process_state_schedule(state)
+        local no_fire_tracker = shallow_copy(sync_invasion_tracker(state))
+        local grandfathered_markers = 0
+        for _, entry in pairs((state.grandfathered_invasion and state.grandfathered_invasion.positions) or {}) do
+            if entry.render and entry.render.valid then
+                grandfathered_markers = grandfathered_markers + 1
+            end
+        end
+        local grandfathered = state.grandfathered_invasion and {
+            pending = state.grandfathered_invasion.pending,
+            required = state.grandfathered_invasion.required,
+            groups = state.grandfathered_invasion.groups,
+            positions = #(state.grandfathered_invasion.positions or {}),
+            markers = grandfathered_markers
+        } or nil
+
+        local before_resume_schedule = count_scheduled_invasion_events(state)
+        local resume = run_admin_invasion_probe_open(state, before_resume_schedule)
+        local scheduled_after_resume = count_scheduled_invasion_events(state)
+
+        remove_probe_invasion_schedule(state)
+        state.grandfathered_invasion = nil
+        state.invasion_candidates = {}
+        state.invasion_candidate_cells = {}
+        sync_invasion_tracker(state)
+        restore_invasion_probe_config(state, config_snapshot)
+
+        local no_fire = (no_fire_tracker.warning_events or 0) <= before_warning_events
+            and (no_fire_tracker.detonated_events or 0) <= before_detonated_events
+            and (no_fire_tracker.triggered_events or 0) <= before_triggered_events
+        local ok = pre_012_gate == true
+            and post_012_gate == false
+            and migration.migrated == true
+            and scheduled_before_migration > 0
+            and scheduled_after_migration == 0
+            and future_event_removed == true
+            and grandfathered ~= nil
+            and grandfathered.markers == grandfathered.positions
+            and migrated_tracker.pending >= (migrated_tracker.required or 0)
+            and no_fire
+            and resume.ok == true
+            and scheduled_after_resume > before_resume_schedule
+            and state.grandfathered_invasion == nil
+
+        return {
+            ok = ok,
+            error = ok and nil or 'grandfathered invasion migration probe failed',
+            force_name = state_key(state),
+            pre_012_gate = pre_012_gate,
+            post_012_gate = post_012_gate,
+            scheduled_before_migration = scheduled_before_migration,
+            scheduled_after_migration = scheduled_after_migration,
+            future_event_removed = future_event_removed,
+            before_warning_events = before_warning_events,
+            before_detonated_events = before_detonated_events,
+            before_triggered_events = before_triggered_events,
+            no_fire_tracker = no_fire_tracker,
+            grandfathered = grandfathered,
+            migrated_tracker = migrated_tracker,
+            resume = resume,
+            scheduled_after_resume = scheduled_after_resume,
+            migration = migration,
+            regular = regular,
+            admin = admin
+        }
+    end
+
+    function Public.probe_grandfathered_overflow_resume(force_name)
+        local state = force_name and state_from_force_name(force_name) or expanse
+        ensure_state_ready(state)
+        local surface = game.surfaces[state.active_surface_index]
+        if not (surface and surface.valid) then
+            return { ok = false, error = 'missing active surface', force_name = state_key(state) }
+        end
+
+        local config_snapshot = snapshot_invasion_probe_config(state)
+        local previous_grandfathered = state.grandfathered_invasion
+        local previous_candidates = state.invasion_candidates
+        local previous_candidate_cells = state.invasion_candidate_cells
+        local previous_schedule = state.schedule
+        local previous_tracker = shallow_copy(state.invasion_tracker or {})
+        configure_fast_invasion_probe(state)
+        state.invasion_candidate_base = 3
+        state.invasion_group_base = 4
+        state.invasion_candidates = {}
+        state.invasion_candidate_cells = {}
+        state.schedule = shallow_copy(state.schedule or {})
+
+        local created_renders = {}
+        local center = { x = state.square_size * 0.5, y = state.square_size * 0.5 }
+        for index = 1, 4, 1 do
+            local position = {
+                x = center.x + state.square_size * (index + 2),
+                y = center.y + state.square_size * 2
+            }
+            local left_top = position_cell_left_top(state, position)
+            local render = Public.invasion_impl.draw_invasion_marker(surface, position)
+            created_renders[#created_renders + 1] = render
+            state.invasion_candidate_cells[invasion_cell_key(left_top)] = true
+            state.invasion_candidates[#state.invasion_candidates + 1] = {
+                surface_index = surface.index,
+                position = position,
+                render = render,
+                left_top = left_top
+            }
+        end
+
+        local required = Functions.invasion_numbers(state).candidates
+        state.grandfathered_invasion = {
+            migration_version = INVASION_BACKLOG_MIGRATION_VERSION,
+            migrated_tick = game.tick,
+            positions = {},
+            await_next_open = true,
+            pending = required,
+            required = required,
+            groups = 4
+        }
+        local before_schedule = count_scheduled_invasion_events(state)
+        local resumed, planned_candidates = resume_grandfathered_invasion(state, {
+            x = center.x + state.square_size * 8,
+            y = center.y + state.square_size * 2
+        })
+        local tracker = shallow_copy(sync_invasion_tracker(state))
+        local after_schedule = count_scheduled_invasion_events(state)
+        local candidates_after = #(state.invasion_candidates or {})
+        local grandfathered_after = state.grandfathered_invasion
+        remove_probe_invasion_schedule(state)
+        for _, render in pairs(created_renders) do
+            if render and render.valid then
+                render.destroy()
+            end
+        end
+        for _, candidate in pairs(planned_candidates or {}) do
+            if candidate.render and candidate.render.valid then
+                candidate.render.destroy()
+            end
+        end
+        Public.invasion_impl.destroy_grandfathered_markers(state.grandfathered_invasion)
+        state.grandfathered_invasion = previous_grandfathered
+        state.invasion_candidates = previous_candidates
+        state.invasion_candidate_cells = previous_candidate_cells
+        state.schedule = previous_schedule
+        state.invasion_tracker = previous_tracker
+        restore_invasion_probe_config(state, config_snapshot)
+
+        local ok = resumed == true
+            and after_schedule > before_schedule
+            and candidates_after == 0
+            and grandfathered_after == nil
+            and tracker.pending == 0
+            and tracker.last_planned_groups == 4
+
+        return {
+            ok = ok,
+            error = ok and nil or 'grandfathered overflow resume probe failed',
+            force_name = state_key(state),
+            resumed = resumed,
+            before_schedule = before_schedule,
+            after_schedule = after_schedule,
+            candidates_after = candidates_after,
+            grandfathered_after = grandfathered_after ~= nil,
+            tracker = tracker
+        }
+    end
+
+    function Public.probe_spawned_invasion_cleanup_migration(force_name)
+        local state = force_name and state_from_force_name(force_name) or expanse
+        ensure_state_ready(state)
+        local surface = game.surfaces[state.active_surface_index]
+        if not (surface and surface.valid) then
+            return { ok = false, error = 'missing active surface', force_name = state_key(state) }
+        end
+
+        state.migrations = state.migrations or {}
+        state.cell_biter_units = state.cell_biter_units or {}
+        local previous_marker = state.migrations.spawned_invasion_backlog_cleaned
+        local previous_marker_surface = state.migrations.spawned_invasion_backlog_cleaned_surface
+        local previous_marker_complete = state.migrations.spawned_invasion_backlog_cleanup_complete
+        local previous_cleanup_attempts = state.migrations.spawned_invasion_backlog_cleanup_attempts
+        local previous_grandfathered = state.grandfathered_invasion
+        local previous_schedule = state.schedule
+        state.migrations.spawned_invasion_backlog_cleaned = nil
+        state.migrations.spawned_invasion_backlog_cleaned_surface = nil
+        state.migrations.spawned_invasion_backlog_cleanup_complete = nil
+        state.migrations.spawned_invasion_backlog_cleanup_attempts = nil
+        state.grandfathered_invasion = nil
+        state.schedule = shallow_copy(state.schedule or {})
+
+        local center = { x = state.square_size * 0.5, y = state.square_size * 0.5 }
+        local untracked_position = surface.find_non_colliding_position('small-biter', { x = center.x + 3, y = center.y + 3 }, 16, 0.5)
+        local tracked_position = surface.find_non_colliding_position('small-biter', { x = center.x + 6, y = center.y + 6 }, 16, 0.5)
+        local probe_radius = math.max(96, (state.square_size or 15) * 8)
+        local far_tracked_position = surface.find_non_colliding_position('small-biter', { x = center.x + probe_radius + 30, y = center.y }, 24, 0.5)
+        local untracked = untracked_position and surface.create_entity({ name = 'small-biter', position = untracked_position, force = 'enemy' }) or nil
+        local tracked = tracked_position and surface.create_entity({ name = 'small-biter', position = tracked_position, force = 'enemy' }) or nil
+        local far_tracked = far_tracked_position and surface.create_entity({ name = 'small-biter', position = far_tracked_position, force = 'enemy' }) or nil
+        if not (untracked and untracked.valid and tracked and tracked.valid and tracked.unit_number and far_tracked and far_tracked.valid and far_tracked.unit_number) then
+            if untracked and untracked.valid then
+                untracked.destroy()
+            end
+            if tracked and tracked.valid then
+                tracked.destroy()
+            end
+            if far_tracked and far_tracked.valid then
+                far_tracked.destroy()
+            end
+            state.migrations.spawned_invasion_backlog_cleaned = previous_marker
+            state.migrations.spawned_invasion_backlog_cleaned_surface = previous_marker_surface
+            state.migrations.spawned_invasion_backlog_cleanup_complete = previous_marker_complete
+            state.migrations.spawned_invasion_backlog_cleanup_attempts = previous_cleanup_attempts
+            state.grandfathered_invasion = previous_grandfathered
+            state.schedule = previous_schedule
+            return { ok = false, error = 'could not create cleanup probe enemies', force_name = state_key(state) }
+        end
+
+        local tracked_unit_number = tracked.unit_number
+        local far_tracked_unit_number = far_tracked.unit_number
+        state.cell_biter_units[tracked_unit_number] = true
+        state.cell_biter_units[far_tracked_unit_number] = true
+        local pre_012_gate = Public.invasion_impl.should_cleanup_spawned_backlog({
+            mod_changes = {
+                ['mts-expanse'] = {
+                    old_version = '0.1.11',
+                    new_version = INVASION_BACKLOG_MIGRATION_VERSION
+                }
+            }
+        })
+        local post_012_gate = Public.invasion_impl.should_cleanup_spawned_backlog({
+            mod_changes = {
+                ['mts-expanse'] = {
+                    old_version = INVASION_BACKLOG_MIGRATION_VERSION,
+                    new_version = '0.1.13'
+                }
+            }
+        })
+        local future_event = {
+            tick = game.tick + 600,
+            event = 'invasion_detonate',
+            parameters = {
+                surface = surface.index,
+                position = { x = center.x + 15, y = center.y + 15 }
+            }
+        }
+        table.insert(state.schedule, future_event)
+        local before_cleanup_schedule = count_scheduled_invasion_events(state)
+
+        local result = Public.invasion_impl.cleanup_spawned_backlog_for_state(state)
+        local repeated = Public.invasion_impl.cleanup_spawned_backlog_for_state(state)
+        local after_cleanup_schedule = count_scheduled_invasion_events(state)
+        local future_event_removed = true
+        for _, stuff in pairs(state.schedule or {}) do
+            if stuff == future_event then
+                future_event_removed = false
+                break
+            end
+        end
+        local direct_grandfathered = state.grandfathered_invasion and {
+            await_next_open = state.grandfathered_invasion.await_next_open == true,
+            pending = state.grandfathered_invasion.pending,
+            required = state.grandfathered_invasion.required,
+            positions = table_count(state.grandfathered_invasion.positions)
+        } or nil
+        local direct_tracker = shallow_copy(sync_invasion_tracker(state))
+        local untracked_removed = not (untracked and untracked.valid)
+        local tracked_removed = not (tracked and tracked.valid)
+        local far_tracked_preserved = far_tracked and far_tracked.valid
+        if tracked and tracked.valid then
+            tracked.destroy()
+        end
+        if far_tracked and far_tracked.valid then
+            far_tracked.destroy()
+        end
+        state.cell_biter_units[tracked_unit_number] = nil
+        state.cell_biter_units[far_tracked_unit_number] = nil
+
+        state.migrations.spawned_invasion_backlog_cleaned = nil
+        state.migrations.spawned_invasion_backlog_cleaned_surface = nil
+        state.migrations.spawned_invasion_backlog_cleanup_complete = nil
+        state.migrations.spawned_invasion_backlog_cleanup_attempts = nil
+        state.grandfathered_invasion = nil
+        local lazy_untracked_position = surface.find_non_colliding_position('small-biter', { x = center.x + 9, y = center.y + 9 }, 16, 0.5)
+        local lazy_tracked_position = surface.find_non_colliding_position('small-biter', { x = center.x + 12, y = center.y + 12 }, 16, 0.5)
+        local lazy_untracked = lazy_untracked_position and surface.create_entity({ name = 'small-biter', position = lazy_untracked_position, force = 'enemy' }) or nil
+        local lazy_tracked = lazy_tracked_position and surface.create_entity({ name = 'small-biter', position = lazy_tracked_position, force = 'enemy' }) or nil
+        if not (lazy_untracked and lazy_untracked.valid and lazy_tracked and lazy_tracked.valid and lazy_tracked.unit_number) then
+            if lazy_untracked and lazy_untracked.valid then
+                lazy_untracked.destroy()
+            end
+            if lazy_tracked and lazy_tracked.valid then
+                lazy_tracked.destroy()
+            end
+            state.migrations.spawned_invasion_backlog_cleaned = previous_marker
+            state.migrations.spawned_invasion_backlog_cleaned_surface = previous_marker_surface
+            state.migrations.spawned_invasion_backlog_cleanup_complete = previous_marker_complete
+            state.migrations.spawned_invasion_backlog_cleanup_attempts = previous_cleanup_attempts
+            state.grandfathered_invasion = previous_grandfathered
+            state.schedule = previous_schedule
+            return { ok = false, error = 'could not create lazy cleanup probe enemies', force_name = state_key(state) }
+        end
+
+        local lazy_tracked_unit_number = lazy_tracked.unit_number
+        state.cell_biter_units[lazy_tracked_unit_number] = true
+        local lazy_result = Public.invasion_impl.ensure_spawned_backlog_cleanup(state)
+        local lazy_repeated = Public.invasion_impl.ensure_spawned_backlog_cleanup(state)
+        local lazy_grandfathered = state.grandfathered_invasion and {
+            await_next_open = state.grandfathered_invasion.await_next_open == true,
+            pending = state.grandfathered_invasion.pending,
+            required = state.grandfathered_invasion.required,
+            positions = table_count(state.grandfathered_invasion.positions)
+        } or nil
+        local lazy_tracker = shallow_copy(sync_invasion_tracker(state))
+        local lazy_untracked_removed = not (lazy_untracked and lazy_untracked.valid)
+        local lazy_tracked_removed = not (lazy_tracked and lazy_tracked.valid)
+        if lazy_tracked and lazy_tracked.valid then
+            lazy_tracked.destroy()
+        end
+        state.cell_biter_units[lazy_tracked_unit_number] = nil
+        state.migrations.spawned_invasion_backlog_cleaned = previous_marker
+        state.migrations.spawned_invasion_backlog_cleaned_surface = previous_marker_surface
+        state.migrations.spawned_invasion_backlog_cleanup_complete = previous_marker_complete
+        state.migrations.spawned_invasion_backlog_cleanup_attempts = previous_cleanup_attempts
+        state.grandfathered_invasion = previous_grandfathered
+        state.schedule = previous_schedule
+
+        local ok = pre_012_gate == true
+            and post_012_gate == false
+            and result.removed and result.removed >= 1
+            and result.removed_scheduled_events and result.removed_scheduled_events >= 1
+            and before_cleanup_schedule > after_cleanup_schedule
+            and future_event_removed == true
+            and direct_grandfathered
+            and direct_grandfathered.await_next_open == true
+            and direct_tracker.pending >= (direct_tracker.required or 0)
+            and untracked_removed == true
+            and tracked_removed == true
+            and far_tracked_preserved == true
+            and repeated.skipped == 'already migrated'
+            and lazy_result.removed and lazy_result.removed >= 1
+            and lazy_grandfathered
+            and lazy_grandfathered.await_next_open == true
+            and lazy_tracker.pending >= (lazy_tracker.required or 0)
+            and lazy_untracked_removed == true
+            and lazy_tracked_removed == true
+            and lazy_repeated.skipped == 'already migrated'
+
+        return {
+            ok = ok,
+            error = ok and nil or 'spawned invasion cleanup migration probe failed',
+            force_name = state_key(state),
+            pre_012_gate = pre_012_gate,
+            post_012_gate = post_012_gate,
+            result = result,
+            repeated = repeated,
+            before_cleanup_schedule = before_cleanup_schedule,
+            after_cleanup_schedule = after_cleanup_schedule,
+            future_event_removed = future_event_removed,
+            direct_grandfathered = direct_grandfathered,
+            direct_tracker = direct_tracker,
+            untracked_removed = untracked_removed,
+            tracked_removed = tracked_removed,
+            far_tracked_preserved = far_tracked_preserved,
+            lazy_result = lazy_result,
+            lazy_repeated = lazy_repeated,
+            lazy_grandfathered = lazy_grandfathered,
+            lazy_tracker = lazy_tracker,
+            lazy_untracked_removed = lazy_untracked_removed,
+            lazy_tracked_removed = lazy_tracked_removed
+        }
+    end
+
+    function Public.probe_impl.valid_container_targets(state)
         for _, container in pairs(state.containers or {}) do
             if not (container.entity and container.entity.valid and container.left_top) then
                 return false
@@ -4436,7 +5509,7 @@ commands.add_command(
             and state.grid[state_grid_key(at_target.left_top)] == true
             and after_at_chests > 0
             and created_at > 0
-            and valid_container_targets(state)
+            and Public.probe_impl.valid_container_targets(state)
 
         local before_frontier_chests = after_at_chests
         local opened_frontier, limited, created_frontier = run_admin_open_batch(state, function()
@@ -4447,7 +5520,7 @@ commands.add_command(
             and limited ~= true
             and created_frontier > 0
             and after_frontier_chests > 0
-            and valid_container_targets(state)
+            and Public.probe_impl.valid_container_targets(state)
 
         return {
             ok = at_ok and frontier_ok,
@@ -4558,7 +5631,7 @@ commands.add_command(
         }
     end
 
-    local function create_probe_mts_nauvis_surface(state)
+    function Public.probe_impl.create_mts_nauvis_surface(state)
         local force_name = state_key(state)
         local surface_name = force_name .. '-nauvis'
         if SA then
@@ -4596,7 +5669,7 @@ commands.add_command(
             return { ok = false, error = 'MTS team force required', force_name = state_key(state) }
         end
 
-        local surface_name, surface = create_probe_mts_nauvis_surface(state)
+        local surface_name, surface = Public.probe_impl.create_mts_nauvis_surface(state)
         local before_exists = surface and surface.valid and true or false
         local deleted = cleanup_mts_nauvis_surfaces(state)
         local after_surface = game.surfaces[surface_name]
@@ -4614,7 +5687,7 @@ commands.add_command(
         }
     end
 
-    local function container_summaries(state)
+    function Public.probe_impl.container_summaries(state)
         local containers = {}
         for unit_number, container in pairs(state.containers or {}) do
             if container.entity and container.entity.valid and container.left_top then
@@ -4635,7 +5708,7 @@ commands.add_command(
         return containers
     end
 
-	    local function state_summary(state)
+	    function Public.probe_impl.state_summary(state)
 		    local mission_levels = {}
 		    for tier, mission in pairs(state.missions or {}) do
 		        mission_levels[tier] = mission.level
@@ -4661,7 +5734,7 @@ commands.add_command(
                 },
 	            cost_stats = shallow_copy(state.cost_stats),
             container_count = table_count(state.containers),
-            containers = container_summaries(state),
+            containers = Public.probe_impl.container_summaries(state),
             mode = Mode.current(),
 	        space_age = SA and true or false,
             space_missions_enabled = SpaceMissions.enabled(),
@@ -4673,9 +5746,21 @@ commands.add_command(
             last_hungry_removed_invalid_tick = state.last_hungry_removed_invalid_tick,
             last_frontier_repair_tick = state.last_frontier_repair_tick,
             last_frontier_repair_created = state.last_frontier_repair_created,
-            invasion_candidates = #(state.invasion_candidates or {}),
+            invasion_candidates = Public.invasion_impl.pending_count(state),
             invasion_candidate_cells = table_count(state.invasion_candidate_cells),
             invasion_tracker = shallow_copy(sync_invasion_tracker(state)),
+            grandfathered_invasion = state.grandfathered_invasion and {
+                pending = state.grandfathered_invasion.pending,
+                required = state.grandfathered_invasion.required,
+                groups = state.grandfathered_invasion.groups,
+                positions = table_count(state.grandfathered_invasion.positions),
+                await_next_open = state.grandfathered_invasion.await_next_open == true,
+                spawned_cleanup_removed = state.grandfathered_invasion.spawned_cleanup_removed,
+                removed_events = state.grandfathered_invasion.removed_events,
+                overdue_events = state.grandfathered_invasion.overdue_events,
+                migrated_tick = state.grandfathered_invasion.migrated_tick,
+                migration_version = state.grandfathered_invasion.migration_version
+            } or nil,
             cell_biter_units = table_count(state.cell_biter_units),
             cell_biter_tracker = shallow_copy(state.cell_biter_tracker),
             next_mts_nauvis_cleanup_tick = state.next_mts_nauvis_cleanup_tick,
@@ -4701,13 +5786,13 @@ commands.add_command(
 
 	function Public.get_state(force_name)
         if force_name then
-            return state_summary(state_from_force_name(force_name))
+            return Public.probe_impl.state_summary(state_from_force_name(force_name))
         end
-        local summary = state_summary(expanse)
+        local summary = Public.probe_impl.state_summary(expanse)
         if is_mts_active() then
             summary.teams = {}
             for name, state in pairs(expanse.team_states or {}) do
-                summary.teams[name] = state_summary(state)
+                summary.teams[name] = Public.probe_impl.state_summary(state)
             end
         end
         return summary
@@ -4738,12 +5823,12 @@ Event.add(defines.events.on_cargo_pod_finished_ascending, on_cargo_pod_finished_
 Event.add(defines.events.on_runtime_mod_setting_changed, on_runtime_mod_setting_changed)
 Event.add(defines.events.on_object_destroyed, infini_resource2)
 Event.add(defines.events.on_entity_damaged, on_entity_damaged)
-Event.add(expanse.events.gui_update, update_resource_gui)
-Event.add(expanse.events.mission_gui_update, update_mission_gui)
-Event.add(expanse.events.invasion_warn, Functions.invasion_warn)
-Event.add(expanse.events.invasion_detonate, Functions.invasion_detonate)
-Event.add(expanse.events.invasion_trigger, Functions.invasion_trigger)
-Event.add(expanse.events.victory, victory)
-Event.add(expanse.events.map_reset, map_reset)
+Event.add(Public.events.gui_update, update_resource_gui)
+Event.add(Public.events.mission_gui_update, update_mission_gui)
+Event.add(Public.events.invasion_warn, Functions.invasion_warn)
+Event.add(Public.events.invasion_detonate, Functions.invasion_detonate)
+Event.add(Public.events.invasion_trigger, Functions.invasion_trigger)
+Event.add(Public.events.victory, victory)
+Event.add(Public.events.map_reset, map_reset)
 
 return Public

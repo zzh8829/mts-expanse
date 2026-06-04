@@ -133,6 +133,15 @@ remote.add_interface(
         probe_invasion_tracking = function (force_name)
             return Expanse.probe_invasion_tracking(force_name)
         end,
+        probe_grandfathered_invasion_migration = function (force_name)
+            return Expanse.probe_grandfathered_invasion_migration(force_name)
+        end,
+        probe_grandfathered_overflow_resume = function (force_name)
+            return Expanse.probe_grandfathered_overflow_resume(force_name)
+        end,
+        probe_spawned_invasion_cleanup_migration = function (force_name)
+            return Expanse.probe_spawned_invasion_cleanup_migration(force_name)
+        end,
         probe_cell_open_biters = function (force_name)
             return Expanse.probe_cell_open_biters(force_name)
         end,
