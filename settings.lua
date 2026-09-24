@@ -483,5 +483,14 @@ data:extend({
         minimum_value = 0,
         maximum_value = 1000000000,
         order = 'g-c'
+    },
+    {
+        type = 'int-setting',
+        name = 'mts-expanse-rock-spill-radius',
+        setting_type = 'runtime-global',
+        default_value = 32,
+        minimum_value = 4,
+        maximum_value = 256,
+        order = 'h-a'
     }
 })

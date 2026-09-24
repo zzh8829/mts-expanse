@@ -160,7 +160,8 @@ local function expanse_config()
         invasion_render_grace_ticks = global_setting('mts-expanse-invasion-render-grace-ticks', 120),
         use_space_platform = global_setting('mts-expanse-use-space-platform', false),
         nonspace_support_size = global_setting('mts-expanse-nonspace-support-size', 40),
-        rocket_launch_weight_threshold = global_setting('mts-expanse-rocket-launch-weight-threshold', 999500)
+        rocket_launch_weight_threshold = global_setting('mts-expanse-rocket-launch-weight-threshold', 999500),
+        rock_spill_radius = global_setting('mts-expanse-rock-spill-radius', 32)
     }
 end
 
@@ -407,6 +408,7 @@ local function init_state_defaults(state, force_name)
     state.use_space_platform = config.use_space_platform
     state.nonspace_support_size = config.nonspace_support_size
     state.rocket_launch_weight_threshold = config.rocket_launch_weight_threshold
+    state.rock_spill_radius = config.rock_spill_radius
     state.cell_biter_units = state.cell_biter_units or {}
     state.cell_biter_tracker = state.cell_biter_tracker or {}
     state.forfeit_history = state.forfeit_history or {}
@@ -1828,7 +1830,7 @@ local function uranium_mining(entity, state)
         local acid = tank.get_fluid_count('sulfuric-acid')
         if acid > 5 then
             tank.remove_fluid { name = 'sulfuric-acid', amount = 4 }
-            entity.surface.spill_item_stack({position = entity.position, stack ={ name = 'uranium-ore', count = 4 }, enable_looted = true, allow_belts = true})
+            Functions.spill_rock_ore({ state = state, surface = entity.surface, position = entity.position, name = 'uranium-ore', count = 4, radius = state.rock_spill_radius })
             FT.flying_text(nil, entity.surface, tank.position, '-4 [fluid=sulfuric-acid]', { r = 0.88, g = 0.02, b = 0.02 })
         end
     end
@@ -1887,7 +1889,8 @@ end
 -- mined: true when this call comes from an actual mining action (player/robot), false for a
 -- death or a scripted regrow -- so only mining actions count toward the milestone, while the
 -- ore is always registered as produced.
-local function infini_rock(entity, state, mined)
+-- miner: the player behind the action, if any; they take the penalty when the ore overflows.
+local function infini_rock(entity, state, mined, miner)
     if entity.type ~= 'simple-entity' then
         return
     end
@@ -1911,7 +1914,10 @@ local function infini_rock(entity, state, mined)
         local roll = deterministic_weighted(state, entity.position, index * 2, inf_ores)
         local amount = 80 + Functions.cell_random_int(state, entity.position, index * 2 + 1, 81) - 1
         if roll then
-            entity.surface.spill_item_stack({position = entity.position, stack = { name = roll, count = amount }, enable_looted = true, allow_belts = true})
+            Functions.spill_rock_ore({
+                state = state, surface = entity.surface, position = entity.position, name = roll, count = amount,
+                radius = state.rock_spill_radius, force = state_force(state), miner = miner
+            })
             -- Register the rock's ore as produced so it shows in the native per-team Production GUI.
             local stats = state_force(state).get_item_production_statistics(entity.surface)
             if stats then stats.on_flow(roll, amount) end
@@ -1983,12 +1989,16 @@ local function infini_resource(event)
     -- it would desync the per-team yield index (biters hit each team at different times).
     local is_premine = event.name ~= defines.events.on_entity_died
     local team_kill = false
+    local miner = event.player_index and game.get_player(event.player_index) or nil
     if not is_premine then
         local cause = event.cause
         team_kill = (cause and cause.valid and cause.force and cause.force.name ~= 'enemy') or false
+        if cause and cause.valid and cause.type == 'character' then
+            miner = cause.player
+        end
     end
     if entity.name == 'big-rock' then
-        infini_rock(entity, state, is_premine or team_kill)
+        infini_rock(entity, state, is_premine or team_kill, miner)
     elseif is_premine and (entity.type == 'tree' or entity.type == 'plant') then
         count_resource_mine(state, 'tree')
     end

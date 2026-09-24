@@ -1576,4 +1576,8 @@ function Public.chest_value(expanse, player)
     end
 end
 
+-- The rock's ore spill and its burying penalty live in rock_spill.lua; main.lua reaches
+-- them through this module because it has no local slots left (Lua's limit of 200).
+Public.spill_rock_ore = (require 'maps.expanse.rock_spill').spill
+
 return Public
