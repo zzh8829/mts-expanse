@@ -4,6 +4,7 @@ local SA = Mode.is_space_age()
 local Raffle = require 'utils.math.raffle'
 local MissionData = require 'maps.expanse.mission_data'
 local Server = require 'utils.server'
+local CargoDelivery = require 'maps.expanse.cargo_delivery'
 
 local function uses_space_platform(expanse)
     return SA and expanse and expanse.use_space_platform == true
@@ -966,6 +967,14 @@ function Public.split_key(key)
     return string.match(key, '^(.-)|(.+)$')
 end
 
+local function insert_pending_rewards(expanse, inventory)
+    for item, count in pairs(expanse.pending_space_rewards or {}) do
+        local name, quality = Public.split_key(item)
+        local inserted = inventory.insert({name = name, count = count, quality = quality})
+        expanse.pending_space_rewards[item] = inserted < count and count - inserted or nil
+    end
+end
+
 local function upgrade_mission_level(expanse, tier)
     local costs = mission_costs(tier)
     local maxlevel = #costs
@@ -989,14 +998,13 @@ local function upgrade_mission_level(expanse, tier)
                 expanse.space_production[item] = (expanse.space_production[item] or 0) + count
             end
         elseif type == 'once' then
-            local hub = mission_hub(expanse)
-            if not (hub and hub.valid) then return end
-            local inventory = mission_hub_inventory(expanse, hub)
-            if not inventory then return end
+            expanse.pending_space_rewards = expanse.pending_space_rewards or {}
             for item, count in pairs(reward) do
-                local name, quality = Public.split_key(item)
-                inventory.insert({name = name, count = count, quality = quality})
+                expanse.pending_space_rewards[item] = (expanse.pending_space_rewards[item] or 0) + count
             end
+            local hub = mission_hub(expanse)
+            local inventory = mission_hub_inventory(expanse, hub)
+            if inventory then insert_pending_rewards(expanse, inventory) end
         elseif type == 'script' then
             if reward['victory'] then
                 script.raise_event(expanse.events.victory, { force_name = expanse.force_name })
@@ -1158,26 +1166,18 @@ function Public.deliver_goods(expanse)
     if not (launcher and launcher.valid) then return end
     local inventory = mission_hub_inventory(expanse, hub)
     if not inventory then return end
-    inventory.sort_and_merge()
-    local itemamount = inventory.get_item_count()
-    if itemamount == 0 then return end
+    if inventory.is_empty() then return end
     local landing_pad = expanse.landing_pad
-    local destination = {type = defines.cargo_destination.surface, surface = game.surfaces[expanse.active_surface_index]}
-    if landing_pad and landing_pad.valid then
-        destination = {type = defines.cargo_destination.station, station = landing_pad}
+    local force = state_force(expanse)
+    local surface = game.surfaces[expanse.active_surface_index]
+    if not (surface and surface.valid) then return end
+    if not (landing_pad and landing_pad.valid and landing_pad.surface == surface and landing_pad.force == force) then
+        landing_pad = surface.find_entities_filtered({name = 'cargo-landing-pad', force = force, limit = 1})[1]
+        expanse.landing_pad = landing_pad
     end
-    for _ = 1, math.min(12, math.max(1, math.ceil(itemamount / 200))), 1 do
-        local pod = launcher.create_cargo_pod()
-        if not pod or not pod.valid then break end
-        local pod_inventory = pod.get_inventory(defines.inventory.cargo_unit)
-        for i = 1, 20, 1 do
-            if not inventory[i].valid_for_read then break end
-            local inserted = pod_inventory.insert(inventory[i])
-            inventory[i].count = inventory[i].count - inserted
-        end
-        inventory.sort_and_merge()
-        pod.cargo_pod_destination = destination
-    end
+    -- No landing pad means no safe destination. Keep rewards at the source.
+    if not landing_pad then return end
+    CargoDelivery.send(inventory, launcher, landing_pad)
 end
 
 function Public.produce_space_goods(expanse)
@@ -1186,9 +1186,12 @@ function Public.produce_space_goods(expanse)
     if not (hub and hub.valid) then return end
     local inventory = mission_hub_inventory(expanse, hub)
     if not inventory then return end
+    insert_pending_rewards(expanse, inventory)
     for item, count in pairs(expanse.space_production) do
         local name, quality = Public.split_key(item)
-        inventory.insert({name = name, count = count, quality = quality})
+        local item_stack = {name = name, count = count, quality = quality}
+        item_stack.count = math.min(count, inventory.get_insertable_count(item_stack))
+        if item_stack.count > 0 then inventory.insert(item_stack) end
     end
 end
 
