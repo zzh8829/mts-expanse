@@ -175,6 +175,19 @@ mts-expanse-cleanup-mts-nauvis=false
 
 ## Publishing
 
+Before releases that change cargo delivery, run:
+
+```bash
+python3 scripts/test-cargo.py
+```
+
+This runs isolated native Factorio profiles for standalone and MTS with NonOrbit
+and orbit-platform support. It checks request targets against existing and incoming
+stock, exact quality, section state/multipliers, inventory bars and shared slots,
+unavailable hatches, team ownership, deferred one-time rewards, actual pod arrival
+without spills, and circuit requests. `CARGO_CASES=nonorbit,platform,mts,mts-platform`
+selects cases. The test probe is excluded from release ZIPs.
+
 Before releases that change mission rewards or victory, run:
 
 ```bash

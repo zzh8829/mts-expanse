@@ -54,6 +54,28 @@ MTS Expanse does not force teams onto a shared orbit platform. Space Age mission
 delivery is routed through the owning team so one team's rockets do not advance
 another team's missions.
 
+### Landing Pad Requests
+
+From 0.1.17, configure requests on your Expanse **cargo landing pad** to control
+mission reward drops. A request for 100 items is a stock target: if the pad holds
+80 and another 15 are already on the way, the next drop sends at most 5.
+Only requested items and qualities are sent while requests are configured.
+Section multipliers and circuit-controlled requests also apply. Disabling
+requests or all configured sections pauses reward drops; an empty circuit request
+signal requests nothing.
+
+With no requests configured, rewards arrive automatically as before, limited to
+available pad space. Cargo already on the way reserves space too. A full or
+missing pad leaves goods at the mission source to retry later. Leave the receiving
+space free while pods are in flight; filling it manually or removing the pad after
+launch can still prevent safe arrival.
+
+Requests do not change your unlocked production rate or delivery-check interval.
+Stored rewards can arrive in a burst when requested. Passive production pauses
+when source storage is full; missed production is not banked. One-time mission
+rewards are retained until source space becomes available. Existing saves adopt
+this behavior on update, including any requests already configured on the pad.
+
 ## Server Settings
 
 The mod exposes settings for expansion price scaling, cell size, synchronized

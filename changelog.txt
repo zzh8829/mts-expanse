@@ -1,4 +1,20 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.17
+Date: 25. 09. 2026
+  Features:
+    - Space Age mission reward drops now respect the receiving landing pad's requests, including
+      item quality, section multipliers, disabled requests, and circuit-controlled requests.
+      Requests are stock targets: pad contents and incoming cargo count toward the requested amount.
+  Bugfixes:
+    - Scripted reward pods reserve available landing pad space before launch, including shared
+      slots and incoming cargo. Full or missing pads retain goods at the mission source for retry.
+    - Pads without configured requests keep automatic reward delivery, limited by free space.
+    - One-time mission rewards that do not fit at the source are saved and retried without loss.
+      Passive production rates are unchanged; production pauses when source storage is full.
+  Tests:
+    - Added native Factorio request, capacity, circuit, quality, and actual pod arrival regressions
+      for standalone and MTS games with NonOrbit and orbit-platform support.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.16
 Date: 22. 09. 2026
   Bugfixes:

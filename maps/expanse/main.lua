@@ -931,6 +931,7 @@ reset = function(state)
     state.nonspace_pad = nil
     state.nonspace_silo = nil
     state.space_production = {}
+    state.pending_space_rewards = {}
     state.cargo_pods = {}
     state.invasion_candidates = {}
     state.invasion_candidate_cells = {}
