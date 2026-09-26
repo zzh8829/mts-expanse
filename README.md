@@ -71,9 +71,12 @@ space free while pods are in flight; filling it manually or removing the pad aft
 launch can still prevent safe arrival.
 
 Requests do not change your unlocked production rate or delivery-check interval.
-Stored rewards can arrive in a burst when requested. Passive production pauses
-when source storage is full; missed production is not banked. One-time mission
-rewards are retained until source space becomes available. Existing saves adopt
+Stored rewards can arrive in a burst when requested. Each reward has a small,
+bounded overflow buffer, so a hub full of asteroids cannot block other rewards.
+Deliveries rotate through stored goods so later items get a turn when the hatch
+is busy. Passive production pauses when that item's storage is full; missed
+production is not banked. One-time mission rewards are retained until source
+space becomes available. Existing saves adopt
 this behavior on update, including any requests already configured on the pad.
 
 ## Server Settings

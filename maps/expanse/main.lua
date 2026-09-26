@@ -930,6 +930,7 @@ reset = function(state)
     state.space_platform = nil
     state.nonspace_pad = nil
     state.nonspace_silo = nil
+    SpaceMissions.clear_reward_overflow(state)
     state.space_production = {}
     state.pending_space_rewards = {}
     state.cargo_pods = {}
@@ -2182,7 +2183,10 @@ function Public.surface_impl.team_released(event)
     local force_name = event.force_name
     if not is_team_force_name(force_name) then return end
     local state = expanse.team_states and expanse.team_states[force_name]
-    if state then Public.surface_impl.destroy_overlay(state) end
+    if state then
+        Public.surface_impl.destroy_overlay(state)
+        SpaceMissions.clear_reward_overflow(state)
+    end
     expanse.team_states[force_name] = nil
     for surface_name, owner in pairs(expanse.surface_to_force or {}) do
         if owner == force_name then expanse.surface_to_force[surface_name] = nil end

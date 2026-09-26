@@ -57,6 +57,7 @@ function Public.install(Expanse, mts, platform)
             assert(dst.get_item_count('iron-plate') == 100, 'real cargo did not arrive at the requested quantity')
             assert(pad.surface.count_entities_filtered{type='item-entity'} == audit.ground_before, 'cargo spilled on ground')
             audit.checks.real_delivery_no_spill = true
+            Missions.clear_reward_overflow(state)
             dst.clear(); src.clear(); src.insert{name='iron-plate',count=50}
             point.get_section(1).filters = {}
             local combinator = assert(pad.surface.create_entity{name='constant-combinator',position={50,45},force=target})
@@ -75,6 +76,7 @@ function Public.install(Expanse, mts, platform)
         local function clear()
             for _, pod in pairs(pods) do if pod.valid then pod.destroy() end end
             pods = {}
+            Missions.clear_reward_overflow(state)
             src.clear(); dst.clear(); dst.set_bar()
             point.enabled = true
             pad.get_or_create_control_behavior().circuit_exclusive_mode_of_operation = defines.control_behavior.cargo_landing_pad.exclusive_mode.none
@@ -146,17 +148,44 @@ function Public.install(Expanse, mts, platform)
         for item,count in pairs(Data.costs[4][2]) do state.missions[4].delivered[item]=count end
         local missionpod=assert(launcher.surface.create_entity{name='cargo-pod',position=launcher.position,force=target});state.cargo_pods[missionpod.unit_number]={pod=missionpod,tier=4}
         Missions.rocket_delivery(state,missionpod);missionpod.destroy()
-        check('one_time_reward_survives_full_source',state.missions[4].level==3 and state.pending_space_rewards['space-science-pack|normal']==200)
+        local bonus = assert(state.reward_overflow['space-science-pack|normal'])
+        check('one_time_reward_survives_full_source',state.missions[4].level==3 and bonus.get_item_count('space-science-pack')+(state.pending_space_rewards['space-science-pack|normal'] or 0)==200)
         src.clear();state.space_production={};Missions.produce_space_goods(state);Missions.produce_space_goods(state)
-        check('pending_one_time_reward_paid_exactly_once',src.get_item_count('space-science-pack')==200 and not next(state.pending_space_rewards))
+        check('pending_one_time_reward_paid_exactly_once',src.get_item_count('space-science-pack')+bonus.get_item_count('space-science-pack')==200 and not next(state.pending_space_rewards))
         if mts then
             local other=Expanse.test_state('team-2')
             check('other_team_unchanged',other.active_surface_index==audit.other_surface and other.missions[4].level==audit.other_level and not next(other.space_production))
         end
-        clear();state.space_production={};request('iron-plate',100);src.insert{name='iron-plate',count=150}
+        clear()
+        check('overflow_inventories_destroyed_on_reset',not bonus.valid)
+        local old_stock, later_stock = game.create_inventory(60), game.create_inventory(1)
+        later_stock.insert{name='tungsten-ore',count=5}
+        local cursor, sent_later = 0, false
+        for attempt=1,#old_stock+1 do
+            for i=1,#old_stock do old_stock[i].set_stack{name='metallic-asteroid-chunk',count=1} end
+            local opened = false
+            cursor = Cargo.send(old_stock,{create_cargo_pod=function()
+                if opened then return nil end
+                opened=true;return wrapped.create_cargo_pod()
+            end},pad,{later_stock},cursor) or cursor
+            sent_later = sent_later or incoming('tungsten-ore')==5
+            for _,pod in pairs(pods) do if pod.valid then pod.destroy() end end
+            pods={}
+            if sent_later then break end
+        end
+        check('slow_hatch_does_not_starve_later_stock',sent_later)
+        old_stock.destroy();later_stock.destroy()
+
+        clear();request('iron-plate',100)
+        local asteroids=src.insert{name='metallic-asteroid-chunk',count=100000}
+        state.space_production={['metallic-asteroid-chunk|normal']=16,['iron-plate|normal']=50}
+        for i=1,100 do Missions.produce_space_goods(state) end
+        check('overflow_production_is_bounded',state.reward_overflow['iron-plate|normal'].get_item_count()==100)
+        state.space_production={}
         audit.ground_before=pad.surface.count_entities_filtered{type='item-entity'}
         Missions.deliver_goods(state)
-        check('integrated_delivery_limits_request',incoming('iron-plate')==100 and src.get_item_count('iron-plate')==50)
+        check('full_asteroid_hub_does_not_block_requested_new_production',incoming('iron-plate')==100 and src.get_item_count('metallic-asteroid-chunk')==asteroids)
+        check('integrated_delivery_limits_request',incoming('metallic-asteroid-chunk')==0)
         audit.flight_started=game.tick
         helpers.write_file('cargo-progress.json',helpers.table_to_json(audit.checks))
     end)

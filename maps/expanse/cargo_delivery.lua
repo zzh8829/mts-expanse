@@ -36,7 +36,8 @@ local function request_limits(pad, point)
     return configured and limits or nil
 end
 
-function Public.send(source, launcher, pad)
+function Public.send(source, launcher, pad, extra_sources, cursor)
+    cursor = cursor or 0
     local destination = pad.get_inventory(defines.inventory.cargo_landing_pad_main)
     local point = pad.get_logistic_point(defines.logistic_member_index.cargo_landing_pad_requester)
     if not (destination and point) then return end
@@ -60,14 +61,23 @@ function Public.send(source, launcher, pad)
             return -- Existing incoming cargo already uses all remaining space.
         end
     end
+    local sources = {source}
+    for _, inventory in ipairs(extra_sources or {}) do sources[#sources + 1] = inventory end
+    local slots_to_send, item_count = {}, 0
+    for _, inventory in ipairs(sources) do
+        item_count = item_count + inventory.get_item_count()
+        for i = 1, #inventory do slots_to_send[#slots_to_send + 1] = inventory[i] end
+    end
     local stage = game.create_inventory(1)
-    local budget = math.min(12, math.max(1, math.ceil(source.get_item_count() / 200)))
+    local budget = math.min(12, math.max(1, math.ceil(item_count / 200)))
     for _ = 1, budget do
         local pod, payload
         -- Scan past unrequested stacks: they must not block a requested item
         -- later in the source inventory, even beyond the first twenty slots.
-        for i = 1, #source do
-            local stack = source[i]
+        local start = cursor
+        for offset = 1, #slots_to_send do
+            local i = (start + offset - 1) % #slots_to_send + 1
+            local stack = slots_to_send[i]
             if stack.valid_for_read then
                 local id = key(stack.name, stack.quality.name)
                 local need = limits and math.max(0, (limits[id] or 0) - (stock[id] or 0)) or stack.count
@@ -79,6 +89,8 @@ function Public.send(source, launcher, pad)
                         if not (pod and pod.valid) then break end
                         payload = pod.get_inventory(defines.inventory.cargo_unit)
                     end
+                    count = math.min(count, payload.get_insertable_count(item))
+                    if count == 0 then goto continue end
                     stage[1].set_stack(stack)
                     stage[1].count = count
                     -- Reserve the actual stack, including metadata. A partial
@@ -93,9 +105,11 @@ function Public.send(source, launcher, pad)
                     if inserted > 0 then
                         stock[id] = (stock[id] or 0) + inserted
                         stack.count = stack.count - inserted
+                        cursor = i
                     end
                 end
             end
+            ::continue::
         end
         if not (pod and pod.valid) then break end
         if payload.is_empty() then pod.destroy(); break end
@@ -103,6 +117,7 @@ function Public.send(source, launcher, pad)
     end
     stage.destroy()
     capacity.destroy()
+    return cursor
 end
 
 return Public

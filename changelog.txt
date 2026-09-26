@@ -1,4 +1,19 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.18
+Date: 26. 09. 2026
+  Bugfixes:
+    - A hidden mission hub full of asteroid chunks no longer blocks newly unlocked rewards.
+      Each reward item can use a small, bounded overflow inventory when the shared hub is full.
+    - Cargo delivery resumes after the last stack sent so a busy hatch cannot continually
+      prioritize early asteroid stacks over later rewards.
+    - Overflow inventories preserve item quality and spoilage and are cleaned up on team reset
+      or release. Existing rewards, landing pad requests, and capacity checks are preserved.
+  Tests:
+    - Passed 102 native cargo checks across standalone and MTS games with both support modes,
+      including full-hub starvation, slow hatches, bounded storage, and actual pod arrival.
+    - Verified 71 mission progression steps and invasion triggering after paid cell unlocks
+      and save/reload. This release does not change invasion rules.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.17
 Date: 25. 09. 2026
   Features:

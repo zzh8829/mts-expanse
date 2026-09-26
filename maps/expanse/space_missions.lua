@@ -967,10 +967,36 @@ function Public.split_key(key)
     return string.match(key, '^(.-)|(.+)$')
 end
 
+-- A full shared hub (often filled with stack-size-one asteroid chunks) must
+-- not prevent a different, newly requested reward from being produced. Keep
+-- a small, real inventory per overflow item so spoilage/quality still work.
+local function insert_reward_items(expanse, inventory, item, count)
+    local name, quality = Public.split_key(item)
+    local inserted = inventory.insert({name = name, count = count, quality = quality})
+    if inserted == count then return inserted end
+    expanse.reward_overflow = expanse.reward_overflow or {}
+    local buffer = expanse.reward_overflow[item]
+    local slots = math.max(1, math.ceil((expanse.space_production[item] or 0) / prototypes.item[name].stack_size))
+    if not (buffer and buffer.valid) then
+        buffer = game.create_inventory(slots)
+        expanse.reward_overflow[item] = buffer
+    elseif #buffer < slots then
+        buffer.resize(slots)
+    end
+    return inserted + buffer.insert({name = name, count = count - inserted, quality = quality})
+end
+
+function Public.clear_reward_overflow(expanse)
+    for _, inventory in pairs(expanse.reward_overflow or {}) do
+        if inventory.valid then inventory.destroy() end
+    end
+    expanse.reward_overflow = nil
+    expanse.cargo_delivery_cursor = nil
+end
+
 local function insert_pending_rewards(expanse, inventory)
     for item, count in pairs(expanse.pending_space_rewards or {}) do
-        local name, quality = Public.split_key(item)
-        local inserted = inventory.insert({name = name, count = count, quality = quality})
+        local inserted = insert_reward_items(expanse, inventory, item, count)
         expanse.pending_space_rewards[item] = inserted < count and count - inserted or nil
     end
 end
@@ -1166,7 +1192,13 @@ function Public.deliver_goods(expanse)
     if not (launcher and launcher.valid) then return end
     local inventory = mission_hub_inventory(expanse, hub)
     if not inventory then return end
-    if inventory.is_empty() then return end
+    local extra_sources, keys = {}, {}
+    for key, buffer in pairs(expanse.reward_overflow or {}) do
+        if buffer.valid then keys[#keys + 1] = key end
+    end
+    table.sort(keys)
+    for _, key in ipairs(keys) do extra_sources[#extra_sources + 1] = expanse.reward_overflow[key] end
+    if inventory.is_empty() and #extra_sources == 0 then return end
     local landing_pad = expanse.landing_pad
     local force = state_force(expanse)
     local surface = game.surfaces[expanse.active_surface_index]
@@ -1177,7 +1209,10 @@ function Public.deliver_goods(expanse)
     end
     -- No landing pad means no safe destination. Keep rewards at the source.
     if not landing_pad then return end
-    CargoDelivery.send(inventory, launcher, landing_pad)
+    -- Resume after the last sent slot. A slow/full hatch must not continually
+    -- favor early asteroid stacks over later rewards.
+    expanse.cargo_delivery_cursor = CargoDelivery.send(inventory, launcher, landing_pad, extra_sources, expanse.cargo_delivery_cursor)
+        or expanse.cargo_delivery_cursor
 end
 
 function Public.produce_space_goods(expanse)
@@ -1188,15 +1223,13 @@ function Public.produce_space_goods(expanse)
     if not inventory then return end
     insert_pending_rewards(expanse, inventory)
     for item, count in pairs(expanse.space_production) do
-        local name, quality = Public.split_key(item)
-        local item_stack = {name = name, count = count, quality = quality}
-        item_stack.count = math.min(count, inventory.get_insertable_count(item_stack))
-        if item_stack.count > 0 then inventory.insert(item_stack) end
+        insert_reward_items(expanse, inventory, item, count)
     end
 end
 
 
 function Public.reset_space(expanse)
+    Public.clear_reward_overflow(expanse)
     destroy_orbit_platform(expanse)
     if expanse.nonspace_pad and expanse.nonspace_pad.valid then
         expanse.nonspace_pad.destructible = true
