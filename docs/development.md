@@ -179,6 +179,7 @@ Before releases that change cargo delivery, run:
 
 ```bash
 python3 scripts/test-cargo.py
+python3 scripts/test-cargo-throughput.py
 ```
 
 This runs isolated native Factorio profiles for standalone and MTS with NonOrbit
@@ -189,6 +190,14 @@ without spills, and circuit requests. It also checks new rewards behind a hub
 full of asteroids, bounded overflow storage and cleanup, and fair delivery through
 a hatch that accepts only one pod per attempt. `CARGO_CASES=nonorbit,platform,mts,mts-platform`
 selects cases. The test probe is excluded from release ZIPs.
+
+The throughput suite measures actual pad inventory arrivals, clearing the pad
+once per second, against every production cycle for six game minutes. It covers
+maximum M4 production, all M4–M10 upgrades together, configured requests, platform
+support, and blocked-pad recovery without lost stored cargo or ground spills.
+`THROUGHPUT_CASES=m4,endgame,requested,platform,blocked` selects cases;
+`CYCLES` and `DRAIN_EVERY` control duration and clearing cadence. `MEASURE_ONLY=1`
+retains reports without failing the rate assertion for baseline comparisons.
 
 Before releases that change mission rewards or victory, run:
 

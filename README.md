@@ -70,7 +70,13 @@ missing pad leaves goods at the mission source to retry later. Leave the receivi
 space free while pods are in flight; filling it manually or removing the pad after
 launch can still prevent safe arrival.
 
-Requests do not change your unlocked production rate or delivery-check interval.
+Requests do not change your unlocked production rate. Production still uses the
+server's interval (one minute by default); stored rewards are checked for delivery
+every second. Mission rewards travel in dedicated pods holding up to 80 slots,
+skipping the hidden support launch and retaining the normal landing animation.
+They only carry what the pad has requested and has space to receive. Vanilla
+rocket cargo and platform logistics keep their normal pod size.
+
 Stored rewards can arrive in a burst when requested. Each reward has a small,
 bounded overflow buffer, so a hub full of asteroids cannot block other rewards.
 Deliveries rotate through stored goods so later items get a turn when the hatch
@@ -78,6 +84,12 @@ is busy. Passive production pauses when that item's storage is full; missed
 production is not banked. One-time mission rewards are retained until source
 space becomes available. Existing saves adopt
 this behavior on update, including any requests already configured on the pad.
+
+To receive the full production rate, keep clearing the pad and request enough
+stock to cover cargo in flight. A very small stock target also limits each batch;
+for example, a target of 5 allows only 5 of that item across the pad and incoming
+pods. Faster custom production intervals or slow unloading can still exceed the
+pad's landing capacity. See [native throughput measurements](docs/cargo-throughput.md).
 
 ## Server Settings
 
