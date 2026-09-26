@@ -1,4 +1,19 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.19
+Date: 26. 09. 2026
+  Bugfixes:
+    - Mission cargo is dispatched every second instead of waiting for the next production batch.
+    - Dedicated reward pods carry up to 80 slots and skip the hidden support silo's launch delay.
+      Normal landing animations, pad requests, incoming reservations, and free-space checks remain.
+      Standard rocket and platform cargo pod sizes are unchanged.
+    - A regularly cleared, ordinary landing pad now receives the full default production rate
+      even with every mission upgrade unlocked, in both NonOrbit and platform support modes.
+  Tests:
+    - Maximum M4 received all 270 expected asteroid chunks over six minutes, previously only 60.
+    - Maximum M4-M10 received all 15,348 expected items over six minutes, with every item matching
+      at every cycle, including with requests configured. No cargo spilled on the ground.
+    - Verified blocked-pad recovery, stored-cargo conservation, and request/capacity regressions.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.18
 Date: 26. 09. 2026
   Bugfixes:

@@ -2656,8 +2656,8 @@ local function process_state_tick(state)
         SpaceMissions.launch_rockets(state)
         if game.tick % state.space_production_interval_ticks == 0 then
             SpaceMissions.produce_space_goods(state)
-            SpaceMissions.deliver_goods(state)
         end
+        SpaceMissions.deliver_goods(state)
     end
     process_state_schedule(state)
 end
@@ -2967,6 +2967,15 @@ local function on_rocket_launch_ordered(event)
     if not data then return end
 
     state.cargo_pods[pod.unit_number] = {pod = pod, tier = data.tier, source = silo}
+end
+
+local function on_cargo_pod_started_ascending(event)
+    local pod = event.cargo_pod
+    -- Reward pods represent goods already earned in orbit. Skip only their
+    -- artificial ascent; let Factorio handle landing hatches and cargo arrival.
+    if pod and pod.valid and pod.name == 'mts-expanse-reward-pod' then
+        pod.force_finish_ascending()
+    end
 end
 
 local function on_cargo_pod_finished_ascending(event)
@@ -4912,6 +4921,7 @@ Event.add(defines.events.on_robot_mined_entity, track_mined_production)
 Event.add(defines.events.on_research_finished, on_research_finished)
 Event.add(defines.events.on_rocket_launch_ordered, on_rocket_launch_ordered)
 Event.add(defines.events.on_cargo_pod_finished_ascending, on_cargo_pod_finished_ascending)
+Event.add(defines.events.on_cargo_pod_started_ascending, on_cargo_pod_started_ascending)
 Event.add(defines.events.on_runtime_mod_setting_changed, on_runtime_mod_setting_changed)
 Event.add(defines.events.on_object_destroyed, infini_resource2)
 Event.add(defines.events.on_entity_damaged, on_entity_damaged)

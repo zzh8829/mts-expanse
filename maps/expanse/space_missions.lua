@@ -1193,12 +1193,16 @@ function Public.deliver_goods(expanse)
     local inventory = mission_hub_inventory(expanse, hub)
     if not inventory then return end
     local extra_sources, keys = {}, {}
+    local has_goods = not inventory.is_empty()
     for key, buffer in pairs(expanse.reward_overflow or {}) do
-        if buffer.valid then keys[#keys + 1] = key end
+        if buffer.valid then
+            keys[#keys + 1] = key
+            if not buffer.is_empty() then has_goods = true end
+        end
     end
+    if not has_goods then return end
     table.sort(keys)
     for _, key in ipairs(keys) do extra_sources[#extra_sources + 1] = expanse.reward_overflow[key] end
-    if inventory.is_empty() and #extra_sources == 0 then return end
     local landing_pad = expanse.landing_pad
     local force = state_force(expanse)
     local surface = game.surfaces[expanse.active_surface_index]
@@ -1209,9 +1213,14 @@ function Public.deliver_goods(expanse)
     end
     -- No landing pad means no safe destination. Keep rewards at the source.
     if not landing_pad then return end
-    -- Resume after the last sent slot. A slow/full hatch must not continually
-    -- favor early asteroid stacks over later rewards.
-    expanse.cargo_delivery_cursor = CargoDelivery.send(inventory, launcher, landing_pad, extra_sources, expanse.cargo_delivery_cursor)
+    -- These are earned rewards, not a new rocket launch. Use larger scripted
+    -- batches without waiting for the hidden source hatch. The dispatcher still
+    -- reserves real pad space and requests before placing anything in a pod.
+    local reward_launcher = {create_cargo_pod = function()
+        return launcher.surface.create_entity{name = 'mts-expanse-reward-pod', position = launcher.position, force = force}
+    end}
+    -- Resume after the last sent slot so later rewards also get a turn.
+    expanse.cargo_delivery_cursor = CargoDelivery.send(inventory, reward_launcher, landing_pad, extra_sources, expanse.cargo_delivery_cursor)
         or expanse.cargo_delivery_cursor
 end
 
