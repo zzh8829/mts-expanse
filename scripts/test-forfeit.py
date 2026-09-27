@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check forfeit chest cleanup and real character crafting queues in isolated Factorio profiles."""
+"""Check soft-reset enemy removal, inventories, and crafting queues in isolated Factorio profiles."""
 import concurrent.futures
 import json
 import os
@@ -35,19 +35,19 @@ def run_case(case):
     (path / 'mods/mod-list.json').write_text(json.dumps({'mods': mods}))
     (path / 'write-data').mkdir()
     (path / 'config.ini').write_text(f'[path]\nread-data={FACTORIO.parent.parent}/data\nwrite-data={path}/write-data\n[general]\nlocale=en\n')
-    for label, args in [('create', ['--create', str(path / 'test.zip')]), ('benchmark', ['--benchmark', str(path / 'test.zip'), '--benchmark-ticks', '660', '--benchmark-runs', '1', '--benchmark-sanitize'])]:
+    for label, args in [('create', ['--create', str(path / 'test.zip')]), ('benchmark', ['--benchmark', str(path / 'test.zip'), '--benchmark-ticks', '1260', '--benchmark-runs', '1', '--benchmark-sanitize'])]:
         with (path / f'{label}.log').open('w') as log:
-            subprocess.run([str(FACTORIO), '--config', str(path / 'config.ini'), '--mod-directory', str(path / 'mods'), *args], stdout=log, stderr=subprocess.STDOUT, check=True)
+            subprocess.run([str(FACTORIO), '--config', str(path / 'config.ini'), '--mod-directory', str(path / 'mods'), *args], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180)
         assert 'stack traceback:' not in (path / f'{label}.log').read_text(), path / f'{label}.log'
         engine_log = path / 'write-data/factorio-current.log'
         assert 'stack traceback:' not in engine_log.read_text(), engine_log
     results = json.loads((path / 'write-data/script-output/forfeit-result.json').read_text())
-    assert all(results.values()), (name, results)
-    return name
+    assert all(results.values()), (name, [key for key, value in results.items() if not value])
+    return f'{name}: {len(results)} checks'
 
 
 if __name__ == '__main__':
     print(f'Isolated profiles: {WORK}', flush=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        for result in pool.map(run_case, [('standalone', False, False), ('space-age', False, True), ('mts', True, True)]):
+        for result in pool.map(run_case, [('standalone', False, False), ('space-age', False, True), ('mts', True, True), ('mts-vanilla', True, False)]):
             print('PASS ' + result, flush=True)

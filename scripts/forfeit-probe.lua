@@ -18,6 +18,46 @@ local function inventory_empty(character)
     return character.get_inventory(defines.inventory.character_main).is_empty()
 end
 
+local function seed_enemies(surface)
+    -- Keep the fixture away from the factory. No test action is installed in a release.
+    surface.request_to_generate_chunks({320, 320}, 4)
+    surface.force_generate_chunk_requests()
+    local tiles = {}
+    for x = 256, 383 do
+        for y = 256, 383 do tiles[#tiles + 1] = {name = 'grass-1', position = {x, y}} end
+    end
+    surface.set_tiles(tiles)
+    local names = {'biter-spawner', 'spitter-spawner'}
+    for _, size in ipairs({'small', 'medium', 'big', 'behemoth'}) do
+        for _, kind in ipairs({'biter', 'spitter', 'worm-turret'}) do
+            names[#names + 1] = size .. '-' .. kind
+        end
+    end
+    if script.active_mods['space-age'] then
+        for _, size in ipairs({'small', 'medium', 'big'}) do
+            for _, kind in ipairs({'stomper-pentapod', 'strafer-pentapod', 'wriggler-pentapod', 'wriggler-pentapod-premature', 'demolisher'}) do
+                names[#names + 1] = size .. '-' .. kind
+            end
+        end
+        names[#names + 1] = 'gleba-spawner'
+        names[#names + 1] = 'gleba-spawner-small'
+    end
+    local enemies, types = {}, {}
+    for i, name in ipairs(names) do
+        local entity = assert(surface.create_entity{name=name, position={272 + (i % 8) * 12, 272 + math.floor(i / 8) * 20}, force='enemy'}, name)
+        enemies[name] = entity
+        types[entity.type] = (types[entity.type] or 0) + 1
+    end
+    enemies.grenade = assert(surface.create_entity{name='grenade',position={300,300},target={370,370},speed=0.01,force='enemy'})
+    if script.active_mods['space-age'] then
+        assert(types['spider-unit'] == 6, 'fixture must include all stompers and strafers')
+        assert(types['segmented-unit'] == 3, 'fixture must include all demolishers')
+        assert(surface.count_entities_filtered{type='spider-leg'} > 0, 'missing real pentapod legs')
+        assert(surface.count_entities_filtered{type='segment'} > 0, 'missing real demolisher segments')
+    end
+    return enemies, types
+end
+
 function Public.install(Expanse)
     -- Route these disconnected test characters through the production team-wide
     -- inventory cleanup. No production methods are replaced inside the release.
@@ -37,11 +77,18 @@ function Public.install(Expanse)
     end)
     Event.on_nth_tick(30, function()
         local audit = storage.forfeit_test
-        if audit.done then return end
+        -- MTS builds its vanilla team mirror asynchronously during early ticks.
+        -- Wait until that setup finishes before placing the test factory/characters.
+        if audit.done or game.tick < 600 then return end
         local state = Expanse.test_state(target)
         local surface = game.surfaces[state.active_surface_index]
         if not audit.started then
             audit.started = true
+            audit.started_tick = game.tick
+            -- Build a settled frontier after MTS's initial mirror, which can replace
+            -- the spawn chests created during on_init before any players connect.
+            Functions.expand(state, {x=30, y=30})
+            Functions.ensure_frontier_chests(state)
             audit.surface = surface.index
             audit.size = state.size
             game.forces[target].technologies['automation'].researched = true
@@ -91,8 +138,17 @@ function Public.install(Expanse)
                 character.insert{name='stone',count=100000}
                 audit.characters[#audit.characters+1] = character
             end
+            audit.enemies, audit.enemy_types = seed_enemies(surface)
+            local bystander_force = mts and game.forces['team-2'] or game.create_force('forfeit-bystander')
+            local bystander_name = script.active_mods['space-age'] and 'small-stomper-pentapod' or 'small-biter'
+            audit.bystander = assert(surface.create_entity{name=bystander_name,position={320,320},force=bystander_force})
+            audit.other_enemy = assert(other_surface.create_entity{name=bystander_name,position=pos,force='enemy'})
             local counts = assert(Expanse.forfeit_impl.run(state))
             audit.results = {
+                no_enemy_entities = surface.count_entities_filtered{force='enemy'} == 0,
+                no_enemy_body_parts = surface.count_entities_filtered{force='enemy', type={'spider-leg', 'segment'}} == 0,
+                other_surface_enemy_preserved = audit.other_enemy.valid,
+                other_force_preserved = audit.bystander.valid,
                 chest_preserved = audit.chest.valid,
                 chest_empty = audit.chest.get_inventory(defines.inventory.chest).is_empty(),
                 trash_empty = audit.chest.get_inventory(defines.inventory.logistic_container_trash).is_empty(),
@@ -104,13 +160,19 @@ function Public.install(Expanse)
                 no_spilled_refunds = surface.count_entities_filtered{type='item-entity'} == 0,
                 surface_and_progress_preserved = surface.index == audit.surface and state.size == audit.size and game.forces[target].technologies.automation.researched
             }
+            for name, entity in pairs(audit.enemies) do
+                audit.results['removed_' .. name] = not entity.valid
+            end
+            helpers.write_file('forfeit-enemies.json',helpers.table_to_json({types=audit.enemy_types, results=audit.results}))
             for _, character in ipairs(audit.characters) do
                 audit.results.queues_empty = audit.results.queues_empty and character.crafting_queue_size == 0
                 audit.results.refunds_removed = audit.results.refunds_removed and inventory_empty(character)
             end
             -- Repeating forfeit must remain safe and leave offers usable.
             assert(Expanse.forfeit_impl.run(state))
-        elseif game.tick >= 630 then
+            audit.results.repeat_reset_clear = surface.count_entities_filtered{force='enemy'} == 0
+        elseif game.tick >= audit.started_tick + 600 then
+            audit.results.no_delayed_enemies = surface.count_entities_filtered{force='enemy'} == 0
             audit.results.no_delayed_crafts = true
             for _, character in ipairs(audit.characters) do
                 audit.results.no_delayed_crafts = audit.results.no_delayed_crafts and character.crafting_queue_size == 0 and inventory_empty(character)

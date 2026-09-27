@@ -1,4 +1,12 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.21
+Date: 27. 09. 2026
+  Bugfixes:
+    - Soft reset now removes all enemy entity types on the resetting team's surface,
+      including stomper/strafer pentapods, demolishers, and attacks already in flight.
+    - Other teams' surfaces and non-enemy forces remain untouched by enemy cleanup.
+      Research, map progress, and hungry chest offers are preserved as before.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.20
 Date: 26. 09. 2026
   Bugfixes:

@@ -18,12 +18,18 @@ Run the MTS compatibility probe against the latest official installed
 scripts/test-mts.sh
 ```
 
-Run the focused forfeit cleanup regressions (hungry chest inventories, real
-character crafting queues, refund spills, and cross-surface isolation):
+Run the focused forfeit cleanup regressions (all biter/spitter/worm tiers,
+pentapods and their legs, demolishers and their segments, nests, attacks in
+flight, hungry chest inventories, real character crafting queues, refund
+spills, and cross-surface/force isolation):
 
 ```bash
 python3 scripts/test-forfeit.py
 ```
+
+These use disposable native Factorio saves in vanilla and Space Age, both
+standalone and with MTS. They verify immediate removal, repeat resets, and no
+delayed enemies while preserving research, map progress, and unrelated entities.
 
 Run the saved event-ID regression against the published 0.1.19 baseline and the
 working tree, in standalone/MTS and vanilla/Space Age:

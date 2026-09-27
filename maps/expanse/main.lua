@@ -1456,12 +1456,12 @@ function Public.forfeit_impl.destroy_enemy_attack_entities(surface)
         return 0
     end
     local removed = 0
-    for _, entity in pairs(surface.find_entities_filtered({
-        force = 'enemy',
-        type = { 'unit', 'turret', 'unit-spawner' }
-    })) do
-        if entity.valid then
-            entity.destroy()
+    -- Space Age adds spider-units (pentapods) and segmented-units (demolishers).
+    -- Clear the enemy force on this team's surface, including attacks in flight,
+    -- without a type allowlist. destroy() avoids death effects spawning new enemies.
+    for _, entity in pairs(surface.find_entities_filtered({ force = 'enemy' })) do
+        -- Destroying a parent can also invalidate its legs or body segments.
+        if entity.valid and entity.destroy() then
             removed = removed + 1
         end
     end
@@ -4164,7 +4164,7 @@ commands.add_command(
 
         local counts, err = Public.forfeit_impl.run(state)
         local after_surface = state.active_surface_index and game.surfaces[state.active_surface_index] or nil
-        local enemy_count = after_surface and after_surface.count_entities_filtered({ force = 'enemy', type = { 'unit', 'turret', 'unit-spawner' } }) or -1
+        local enemy_count = after_surface and after_surface.count_entities_filtered({ force = 'enemy' }) or -1
         local ground_items = after_surface and after_surface.count_entities_filtered({ type = 'item-entity' }) or -1
         local chest_count = after_surface and after_surface.count_entities_filtered({ name = 'requester-chest', force = 'neutral' }) or -1
 
