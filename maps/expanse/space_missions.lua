@@ -5,6 +5,7 @@ local Raffle = require 'utils.math.raffle'
 local MissionData = require 'maps.expanse.mission_data'
 local Server = require 'utils.server'
 local CargoDelivery = require 'maps.expanse.cargo_delivery'
+local ExpanseEvents = require 'maps.expanse.events'
 
 local function uses_space_platform(expanse)
     return SA and expanse and expanse.use_space_platform == true
@@ -959,7 +960,7 @@ function Public.unlock_mission_tier(expanse, tier)
     if expanse.missions[tier].level == 0 then
         expanse.missions[tier].level = 1
         print_to_state(expanse, {'expanse.missions_tier_unlock', tier}, {r = 0.88, g = 0, b = 0})
-        script.raise_event(expanse.events.mission_gui_update, { tier = tier, force_name = expanse.force_name })
+        script.raise_event(ExpanseEvents.mission_gui_update, { tier = tier, force_name = expanse.force_name })
     end
 end
 
@@ -1033,7 +1034,7 @@ local function upgrade_mission_level(expanse, tier)
             if inventory then insert_pending_rewards(expanse, inventory) end
         elseif type == 'script' then
             if reward['victory'] then
-                script.raise_event(expanse.events.victory, { force_name = expanse.force_name })
+                script.raise_event(ExpanseEvents.victory, { force_name = expanse.force_name })
             elseif reward['new-ship'] then
                 print_to_state(expanse, {'expanse.script-new-ship', reward['new-ship']})
             elseif reward['spoiling'] then
@@ -1050,7 +1051,7 @@ local function upgrade_mission_level(expanse, tier)
         Server.to_discord_embed({'expanse.missions_levelup', tier, expanse.missions[tier].level}, true)
     end
     expanse.missions[tier].delivered = {}
-    script.raise_event(expanse.events.mission_gui_update, { tier = tier, force_name = expanse.force_name })
+    script.raise_event(ExpanseEvents.mission_gui_update, { tier = tier, force_name = expanse.force_name })
 end
 
 function Public.rocket_delivery(expanse, pod)
@@ -1088,7 +1089,7 @@ function Public.rocket_delivery(expanse, pod)
             inventory.remove({name = item.name, count = used, quality = quality})
         end
     end
-    script.raise_event(expanse.events.mission_gui_update, { tier = tier, force_name = expanse.force_name })
+    script.raise_event(ExpanseEvents.mission_gui_update, { tier = tier, force_name = expanse.force_name })
     expanse.cargo_pods[pod.unit_number] = nil
     if level < 1 then return end
 

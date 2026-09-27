@@ -1,4 +1,18 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.20
+Date: 26. 09. 2026
+  Bugfixes:
+    - Fixed invasions silently failing after saved custom event IDs shifted during a mod change.
+      Warnings, detonations, and enemy waves now use the same current IDs as their handlers.
+    - Fixed hungry chest and mission updates reaching unrelated player-permission handlers.
+    - Existing saves keep factories, research, expansion progress, and pending invasion timers.
+      Previously discarded invasion events are not replayed; no map reset is required.
+  Tests:
+    - Reproduced the reported get_player(nil) error and missing invasions on published 0.1.19.
+    - Passed eight native reload/upgrade runs across standalone and MTS, vanilla and Space Age,
+      checking actual enemies, blast damage, chest payment, future timers, and saved factories.
+    - Passed standalone/package and official MTS compatibility checks on Factorio 2.0.77.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.19
 Date: 26. 09. 2026
   Bugfixes:

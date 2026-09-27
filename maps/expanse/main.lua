@@ -22,18 +22,8 @@ local format_number = require 'util'.format_number
 local Autostash = require 'modules.autostash'
 local FT = require 'utils.functions.flying_texts'
 
-local expanse = {
-    events = {
-        gui_update = Event.generate_event_name('expanse_gui_update'),
-        mission_gui_update = Event.generate_event_name('expanse_missions_gui_update'),
-        invasion_warn = Event.generate_event_name('invasion_warn'),
-        invasion_detonate = Event.generate_event_name('invasion_detonate'),
-        invasion_trigger = Event.generate_event_name('invasion_trigger'),
-        victory = Event.generate_event_name('victory'),
-        map_reset = Event.generate_event_name('expanse_map_reset')
-    }
-}
-local Public = {}
+local expanse = {}
+local Public = {events = require 'maps.expanse.events'}
 
 Global.register(
     expanse,
@@ -350,7 +340,8 @@ end
 local function init_state_defaults(state, force_name)
     local config = expanse_config()
     state.force_name = force_name or state.force_name or DEFAULT_FORCE_NAME
-    state.events = expanse.events
+    -- Discard legacy persisted IDs only during normal runtime/configuration, never on_load.
+    state.events = nil
     state.surface_name = state.surface_name or state_surface_name(state.force_name)
     state.planet_key = planet_rng_key(state.surface_name)
     local desired_source_surface = state_source_surface_name(state.force_name)
@@ -1064,7 +1055,7 @@ reset = function(state)
         game.reset_time_played()
     end
     if SpaceMissions.enabled() then
-        script.raise_event(expanse.events.mission_gui_update, { force_name = state_key(state) })
+        script.raise_event(Public.events.mission_gui_update, { force_name = state_key(state) })
     end
 end
 
@@ -1629,9 +1620,9 @@ function Public.forfeit_impl.run(state, player)
     Public.forfeit_impl.clear_deaths_for_force(state_key(state))
 
     game.print({'expanse.forfeit_done', player and player.valid and player.name or 'Server', counts.buildings, counts.enemies, counts.inventory_items, force.name}, { r = 0.4, g = 0.85, b = 1 })
-    script.raise_event(expanse.events.gui_update, { force_name = state_key(state) })
+    script.raise_event(Public.events.gui_update, { force_name = state_key(state) })
     if SpaceMissions.enabled() then
-        script.raise_event(expanse.events.mission_gui_update, { force_name = state_key(state) })
+        script.raise_event(Public.events.mission_gui_update, { force_name = state_key(state) })
     end
     return counts
 end
@@ -1768,7 +1759,7 @@ local function handle_completed_container(state, expansion_position, player)
         end
     end
     sync_invasion_tracker(state)
-    script.raise_event(expanse.events.gui_update, { force_name = state_key(state) })
+    script.raise_event(Public.events.gui_update, { force_name = state_key(state) })
 end
 
 local function container_opened(event)
@@ -2378,7 +2369,7 @@ local function on_configuration_changed(_event)
         end
     end
     if SpaceMissions.enabled() then
-        script.raise_event(expanse.events.mission_gui_update, {})
+        script.raise_event(Public.events.mission_gui_update, {})
     end
     setup_mts_events()
 end
@@ -2391,9 +2382,9 @@ local function on_runtime_mod_setting_changed(event)
         init_state_defaults(state, state_key(state))
     end
     apply_world_settings()
-    script.raise_event(expanse.events.gui_update, {})
+    script.raise_event(Public.events.gui_update, {})
     if SpaceMissions.enabled() then
-        script.raise_event(expanse.events.mission_gui_update, {})
+        script.raise_event(Public.events.mission_gui_update, {})
     end
 end
 
@@ -2530,13 +2521,13 @@ local function process_state_schedule(state)
                 tracker.warning_events = (tracker.warning_events or 0) + 1
                 invasion_schedule_changed = true
             end
-            script.raise_event(state.events and state.events[stuff.event] or expanse.events[stuff.event], stuff.parameters)
+            script.raise_event(Public.events[stuff.event], stuff.parameters)
             state.schedule[index] = nil
         end
     end
     if invasion_schedule_changed then
         sync_invasion_tracker(state)
-        script.raise_event(expanse.events.gui_update, { force_name = state_key(state) })
+        script.raise_event(Public.events.gui_update, { force_name = state_key(state) })
     end
 end
 
@@ -3138,7 +3129,7 @@ end
 local function print_admin_open_result(state, player, opened, limited)
     local suffix = limited and ' Limit reached; run the command again to continue.' or ''
     state_print(state, (player.name or 'Server') .. ' admin-opened ' .. opened .. ' Expanse cell(s).' .. suffix)
-    script.raise_event(expanse.events.gui_update, { force_name = state_key(state) })
+    script.raise_event(Public.events.gui_update, { force_name = state_key(state) })
 end
 
 local function run_admin_open_batch(state, open_fn)
@@ -4925,12 +4916,12 @@ Event.add(defines.events.on_cargo_pod_started_ascending, on_cargo_pod_started_as
 Event.add(defines.events.on_runtime_mod_setting_changed, on_runtime_mod_setting_changed)
 Event.add(defines.events.on_object_destroyed, infini_resource2)
 Event.add(defines.events.on_entity_damaged, on_entity_damaged)
-Event.add(expanse.events.gui_update, update_resource_gui)
-Event.add(expanse.events.mission_gui_update, update_mission_gui)
-Event.add(expanse.events.invasion_warn, Functions.invasion_warn)
-Event.add(expanse.events.invasion_detonate, Functions.invasion_detonate)
-Event.add(expanse.events.invasion_trigger, Functions.invasion_trigger)
-Event.add(expanse.events.victory, victory)
-Event.add(expanse.events.map_reset, map_reset)
+Event.add(Public.events.gui_update, update_resource_gui)
+Event.add(Public.events.mission_gui_update, update_mission_gui)
+Event.add(Public.events.invasion_warn, Functions.invasion_warn)
+Event.add(Public.events.invasion_detonate, Functions.invasion_detonate)
+Event.add(Public.events.invasion_trigger, Functions.invasion_trigger)
+Event.add(Public.events.victory, victory)
+Event.add(Public.events.map_reset, map_reset)
 
 return Public

@@ -25,6 +25,19 @@ character crafting queues, refund spills, and cross-surface isolation):
 python3 scripts/test-forfeit.py
 ```
 
+Run the saved event-ID regression against the published 0.1.19 baseline and the
+working tree, in standalone/MTS and vanilla/Space Age:
+
+```bash
+python3 scripts/test-event-reload.py
+```
+
+This changes custom-event allocation between save and load, reproduces the
+reported `get_player(nil)` error, then checks actual invasion enemies and blast
+damage after both a plain reload and an upgrade. It also checks paid chest
+progress, future timers, factories, and research. See
+[the invasion diagnosis](invasion-event-routing.md) for the failure mechanism.
+
 Use a specific official MTS zip when needed:
 
 ```bash

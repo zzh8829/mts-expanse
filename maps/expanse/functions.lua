@@ -4,6 +4,7 @@ local Mode = require 'maps.expanse.mode'
 local SpaceMissions = require 'maps.expanse.space_missions'
 local Task = require 'utils.task'
 local Token = require 'utils.token'
+local ExpanseEvents = require 'maps.expanse.events'
 local Public = {}
 
 local ores = { 'copper-ore', 'iron-ore', 'stone', 'coal' }
@@ -1455,7 +1456,7 @@ function Public.set_container(expanse, entity, known_left_top, reveal)
             local count_removed = inventory.remove({ name = 'coin', count = 1 })
             if count_removed > 0 then
                 expanse.cost_stats[Public.make_key('coin', 'normal')] = (expanse.cost_stats[Public.make_key('coin', 'normal')] or 0) + count_removed
-                script.raise_event(expanse.events.gui_update, { item = 'coin', quality = 'normal', force_name = expanse.force_name })
+                script.raise_event(ExpanseEvents.gui_update, { item = 'coin', quality = 'normal', force_name = expanse.force_name })
                 local remaining_budget = get_remaining_budget(expanse, container)
                 -- Per-team reroll: advance only THIS container's generation; never touch the
                 -- shared meta cell, so other teams' chests are completely unaffected.
@@ -1480,7 +1481,7 @@ function Public.set_container(expanse, entity, known_left_top, reveal)
         container.price[key].count = container.price[key].count - count_removed
         if count_removed > 0 then
             expanse.cost_stats[Public.make_key(name, quality)] = (expanse.cost_stats[Public.make_key(name, quality)] or 0) + count_removed
-            script.raise_event(expanse.events.gui_update, { item = name, quality = quality, force_name = expanse.force_name})
+            script.raise_event(ExpanseEvents.gui_update, { item = name, quality = quality, force_name = expanse.force_name})
             if container.price[key].count <= 0 then
                 remove_one_render(container, key)
                 table.remove(container.price, key)
