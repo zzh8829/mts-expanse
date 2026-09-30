@@ -970,7 +970,8 @@ end
 
 -- A full shared hub (often filled with stack-size-one asteroid chunks) must
 -- not prevent a different, newly requested reward from being produced. Keep
--- a small, real inventory per overflow item so spoilage/quality still work.
+-- a small, real inventory per overflow item. These are mission staging stores;
+-- perishables stay fresh here and age normally once dispatched in a pod.
 local function insert_reward_items(expanse, inventory, item, count)
     local name, quality = Public.split_key(item)
     local inserted = inventory.insert({name = name, count = count, quality = quality})
@@ -995,7 +996,36 @@ function Public.clear_reward_overflow(expanse)
     expanse.cargo_delivery_cursor = nil
 end
 
+local function keep_reward_fresh(stack)
+    if stack.valid_for_read and stack.spoil_tick > 0 then
+        stack.spoil_percent = 0
+    end
+end
+
+local function prepare_reward_storage(expanse, inventory)
+    for i = 1, #inventory do keep_reward_fresh(inventory[i]) end
+    for item, buffer in pairs(expanse.reward_overflow or {}) do
+        if buffer.valid then
+            local name = Public.split_key(item)
+            for i = 1, #buffer do
+                local stack = buffer[i]
+                if stack.valid_for_read then
+                    if name ~= 'spoilage' and stack.name == 'spoilage' then
+                        -- Old saves can contain spoilage in a fruit-only buffer.
+                        -- Discard that waste, not intentional spoilage rewards in
+                        -- their own buffer. Never touch delivered player inventory.
+                        stack.clear()
+                    else
+                        keep_reward_fresh(stack)
+                    end
+                end
+            end
+        end
+    end
+end
+
 local function insert_pending_rewards(expanse, inventory)
+    prepare_reward_storage(expanse, inventory)
     for item, count in pairs(expanse.pending_space_rewards or {}) do
         local inserted = insert_reward_items(expanse, inventory, item, count)
         expanse.pending_space_rewards[item] = inserted < count and count - inserted or nil
@@ -1193,6 +1223,7 @@ function Public.deliver_goods(expanse)
     if not (launcher and launcher.valid) then return end
     local inventory = mission_hub_inventory(expanse, hub)
     if not inventory then return end
+    prepare_reward_storage(expanse, inventory)
     local extra_sources, keys = {}, {}
     local has_goods = not inventory.is_empty()
     for key, buffer in pairs(expanse.reward_overflow or {}) do

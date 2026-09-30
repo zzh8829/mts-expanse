@@ -59,6 +59,16 @@ quickly. Full pads, disabled requests, slow unloading, and exceptionally short
 production intervals can still restrict delivery. Source storage stays bounded;
 blocked passive production is not accumulated indefinitely.
 
+Hidden mission inventories are staging storage: perishable rewards stay fresh
+until dispatch. Items age normally in cargo pods, the receiving landing pad,
+and player inventories. Older saves may have spoilage occupying a fruit's
+overflow buffer. That waste is automatically discarded before production or
+dispatch, without needing a spoilage request. Intentional spoilage rewards in
+the shared source hub or their own spoilage buffer are preserved. Cleanup never
+deletes anything from the receiving pad or other player storage.
+
 Reproduce with `python3 scripts/test-cargo-throughput.py`. Run
 `python3 scripts/test-cargo.py` for exact-quality requests, incoming/shared space,
 inventory bars, circuits, team isolation, and other cargo regressions.
+Run `python3 scripts/test-reward-spoilage.py` for legacy-save recovery and
+perishable reward regression coverage.

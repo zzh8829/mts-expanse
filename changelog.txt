@@ -1,4 +1,18 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.22
+Date: 29. 09. 2026
+  Bugfixes:
+    - Perishable mission rewards stay fresh in the hidden source hub and overflow buffers.
+      Spoilage resumes normally after dispatch; delivered items are not refreshed or deleted.
+    - Existing fruit buffers clogged with spoilage automatically discard that waste so fresh
+      rewards can be produced again, even when the landing pad requests zero spoilage.
+    - Intentional spoilage mission rewards are retained and remain available on request.
+      Storage bounds, item quality, production rates, pad requests, and capacity limits remain.
+  Tests:
+    - Passed 108 native spoilage checks across standalone/MTS and NonOrbit/platform support,
+      including persisted clogged buffers, repeated spoilage, actual arrivals, and normal
+      spoilage in delivered or unrelated inventories. Passed 102 existing cargo checks.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.21
 Date: 27. 09. 2026
   Bugfixes:

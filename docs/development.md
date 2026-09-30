@@ -199,6 +199,7 @@ Before releases that change cargo delivery, run:
 ```bash
 python3 scripts/test-cargo.py
 python3 scripts/test-cargo-throughput.py
+python3 scripts/test-reward-spoilage.py
 ```
 
 This runs isolated native Factorio profiles for standalone and MTS with NonOrbit
@@ -217,6 +218,14 @@ support, and blocked-pad recovery without lost stored cargo or ground spills.
 `THROUGHPUT_CASES=m4,endgame,requested,platform,blocked` selects cases;
 `CYCLES` and `DRAIN_EVERY` control duration and clearing cadence. `MEASURE_ONLY=1`
 retains reports without failing the rate assertion for baseline comparisons.
+
+The reward-spoilage suite creates and reloads native saves containing legacy
+fruit buffers clogged with spoilage. It checks automatic recovery with spoilage
+requested at zero, repeated spoilage, bounded storage, disabled requests and a
+full pad, quality, actual fruit arrival, and retention/delivery of intentional
+spoilage rewards. Native time verifies that only hidden mission rewards stay
+fresh: items in the receiving pad and unrelated inventories still spoil normally.
+`SPOILAGE_CASES=nonorbit,platform,mts,mts-platform` selects support configurations.
 
 Before releases that change mission rewards or victory, run:
 

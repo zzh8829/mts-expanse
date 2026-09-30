@@ -13,7 +13,7 @@ MTS = Path(os.environ.get('MTS_MOD_ZIP', str(Path.home() / 'Library/Application 
 VERSION = json.loads((ROOT / 'info.json').read_text())['version']
 
 
-def run_case(name, mts=False, platform=False):
+def run_case(name, mts=False, platform=False, probe='cargo-probe.lua', ticks=14000):
     path = Path(tempfile.mkdtemp(prefix=f'mts-expanse-cargo-{name}-'))
     print(f'{name}: {path}', flush=True)
     mod = path / 'mods' / f'mts-expanse_{VERSION}'
@@ -25,7 +25,7 @@ def run_case(name, mts=False, platform=False):
     if platform:
         text = text.replace("local Expanse = require 'maps.expanse.main'", "require('utils.event').on_init(function() settings.global['mts-expanse-use-space-platform']={value=true} end)\nlocal Expanse = require 'maps.expanse.main'")
     control.write_text(text+f"\nrequire('cargo_probe').install(Expanse,{str(mts).lower()},{str(platform).lower()})\n")
-    shutil.copyfile(ROOT/'scripts/cargo-probe.lua',mod/'cargo_probe.lua')
+    shutil.copyfile(ROOT/'scripts'/probe,mod/'cargo_probe.lua')
     mods = [{'name':n,'enabled':True} for n in ['base','quality','elevated-rails','space-age','mts-expanse']]
     if mts:
         (path/'mods'/MTS.name).symlink_to(MTS);mods.append({'name':'multi-team-support','enabled':True})
@@ -33,7 +33,7 @@ def run_case(name, mts=False, platform=False):
     (path/'write-data').mkdir()
     (path/'config.ini').write_text(f'[path]\nread-data={FACTORIO.parent.parent}/data\nwrite-data={path}/write-data\n[general]\nlocale=en\n')
     save=path/'test.zip'
-    for label,args in [('create',['--create',str(save)]),('benchmark',['--benchmark',str(save),'--benchmark-ticks','14000','--benchmark-runs','1','--benchmark-sanitize'])]:
+    for label,args in [('create',['--create',str(save)]),('benchmark',['--benchmark',str(save),'--benchmark-ticks',str(ticks),'--benchmark-runs','1','--benchmark-sanitize'])]:
         with (path/f'{label}.log').open('w') as f:
             p=subprocess.run([str(FACTORIO),'--config',str(path/'config.ini'),'--mod-directory',str(path/'mods'),*args],stdout=f,stderr=subprocess.STDOUT,timeout=180)
         log=(path/f'{label}.log').read_text()+(path/'write-data/factorio-current.log').read_text()
