@@ -5,6 +5,7 @@ local Raffle = require 'utils.math.raffle'
 local MissionData = require 'maps.expanse.mission_data'
 local Server = require 'utils.server'
 local CargoDelivery = require 'maps.expanse.cargo_delivery'
+local SiloRecovery = require 'maps.expanse.silo_recovery'
 local ExpanseEvents = require 'maps.expanse.events'
 
 local function uses_space_platform(expanse)
@@ -249,6 +250,7 @@ end
 
 function Public.launch_rockets(expanse)
     if not Public.enabled() then return end
+    Public.repair_silos(expanse)
     local silos = expanse.rocket_silos or {}
     if expanse.missions[4].level == 0 then return end --we expect rocket silo research done first, at all cases
     for unit_number, data in pairs(silos) do
@@ -306,6 +308,36 @@ local function silo_renders(silo, tier)
         only_in_alt_mode = true
     }
     return { id, id2}
+end
+
+function Public.repair_silos(expanse)
+    local broken = {}
+    for unit, data in pairs(expanse.rocket_silos or {}) do
+        if SiloRecovery.is_broken(data.entity) then
+            broken[#broken + 1] = {unit = unit, data = data}
+        end
+    end
+    -- Re-key registrations outside the traversal: adding keys during pairs can
+    -- skip another silo, and the recreated entity has a new unit number.
+    for _, entry in ipairs(broken) do
+        local data = entry.data
+        local old = data.entity
+        local replacement = SiloRecovery.rebuild(old)
+        if replacement then
+            for _, render in pairs(data.renders or {}) do
+                if render.valid then render.destroy() end
+            end
+            data.entity = replacement
+            data.renders = silo_renders(replacement, data.tier)
+            expanse.rocket_silos[entry.unit] = nil
+            expanse.rocket_silos[replacement.unit_number] = data
+            for _, cargo in pairs(expanse.cargo_pods or {}) do
+                if cargo.source == old then cargo.source = replacement end
+            end
+            log('Repaired missing mission rocket: ' .. replacement.force.name .. ' tier ' .. data.tier .. ' silo ' .. entry.unit)
+        end
+    end
+    return #broken
 end
 
 local function tier3_object(expanse, surface, left_top, repeats)

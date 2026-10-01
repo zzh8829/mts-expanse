@@ -1,4 +1,20 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.23
+Date: 30. 09. 2026
+  Bugfixes:
+    - Soft reset preserves the rockets and cargo pods belonging to preserved mission silos,
+      including mission cargo in transit and pods arriving at the preserved landing pad.
+    - Existing saves automatically recover mission silos stuck at ready-to-launch with a
+      missing rocket. Recovery preserves cargo, modules, item quality and spoilage metadata,
+      completed rocket parts, settings, circuit wires, and mission progress.
+    - Healthy silos and the configured minimum cargo weight for launch remain unchanged.
+      No map reset or manual console repair is required.
+  Tests:
+    - Recovered five damaged silos in an existing multiplayer save. All four full rockets
+      launched and received mission credit; tier 8 advanced from mission level 5 to 6.
+    - Passed 60 native recovery checks across standalone, MTS, and platform support, plus
+      162 existing soft-reset checks covering vanilla and Space Age.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.22
 Date: 29. 09. 2026
   Bugfixes:

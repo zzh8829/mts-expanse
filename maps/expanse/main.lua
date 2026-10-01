@@ -1479,9 +1479,22 @@ function Public.forfeit_impl.is_preserved_force_entity(state, entity)
         return true
     end
     for _, silo in pairs(state.rocket_silos or {}) do
-        if silo.entity and silo.entity.valid and entity == silo.entity then
-            return true
+        if silo.entity and silo.entity.valid then
+            if entity == silo.entity then return true end
+            local rocket = silo.entity.rocket
+            if rocket and rocket.valid and (entity == rocket or entity == rocket.attached_cargo_pod) then
+                return true
+            end
         end
+    end
+    -- Mission progress and its preserved silos/pad include cargo in transit.
+    for _, cargo in pairs(state.cargo_pods or {}) do
+        local pod = cargo.pod
+        if pod and pod.valid and (entity == pod or entity == pod.rocket) then return true end
+    end
+    if entity.type == 'cargo-pod' and state.landing_pad and state.landing_pad.valid then
+        local destination = entity.cargo_pod_destination
+        if destination and destination.station == state.landing_pad then return true end
     end
     return false
 end
