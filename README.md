@@ -100,6 +100,15 @@ open limits.
 Most servers can start with the defaults. Competitive MTS servers usually want
 to keep synchronized cell content and synchronized invasions enabled.
 
+Expanse reads each resource's **Richness** slider from the map creation screen.
+For headless servers, the equivalent map generation setting is
+`autoplace_controls["iron-ore"].richness` (`2` means 200%). At 200% iron,
+each starter iron tile holds 3,000 ore. Newly opened
+cells use the slider for the ore or fluid they contain, including the
+planet-specific sliders for Space Age biomes. On an existing save, these
+settings apply to future unlocks and new team starts. Previously mined
+deposits keep their remaining amounts.
+
 Starting in 0.1.14, the default time evolution factor is `0.0000005`. From zero,
 time alone reaches about 23.2% evolution after seven running game days, compared
 with 54.7% at the previous default of `0.000002`. Pollution and nest-kill evolution

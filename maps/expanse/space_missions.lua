@@ -3,6 +3,7 @@ local Mode = require 'maps.expanse.mode'
 local SA = Mode.is_space_age()
 local Raffle = require 'utils.math.raffle'
 local MissionData = require 'maps.expanse.mission_data'
+local Richness = require 'maps.expanse.richness'
 local CargoDelivery = require 'maps.expanse.cargo_delivery'
 local SiloRecovery = require 'maps.expanse.silo_recovery'
 local ExpanseEvents = require 'maps.expanse.events'
@@ -98,18 +99,22 @@ local function announce_silo(expanse, tier, silo)
     MissionPins.team(expanse, expanse.rocket_silos[silo.unit_number])
 end
 
+function Public.reward_storage(expanse)
+    local sources = {}
+    local inventory = mission_hub_inventory(expanse, mission_hub(expanse))
+    if inventory then sources[#sources + 1] = inventory end
+    for _, buffer in pairs(expanse.reward_overflow or {}) do
+        if buffer.valid then sources[#sources + 1] = buffer end
+    end
+    return sources
+end
+
 -- True when earned rewards wait at their source because the landing pad has no
 -- room for them.
 function Public.rewards_blocked(expanse)
     local hub, pad = mission_hub(expanse), expanse.landing_pad
     if not (hub and hub.valid and pad and pad.valid) then return false end
-    local sources = {}
-    local inventory = mission_hub_inventory(expanse, hub)
-    if inventory then sources[#sources + 1] = inventory end
-    for _, buffer in pairs(expanse.reward_overflow or {}) do
-        if buffer.valid then sources[#sources + 1] = buffer end
-    end
-    return CargoDelivery.blocked_by_space(sources, pad)
+    return CargoDelivery.blocked_by_space(Public.reward_storage(expanse), pad)
 end
 
 local function create_probe_cargo_pod(expanse, launcher)
@@ -352,14 +357,10 @@ local function tier3_object(expanse, surface, left_top, repeats)
     local area = cell_area(expanse, left_top)
     local position = surface.find_non_colliding_position_in_box('electric-mining-drill', area, 1, false)
     if position and math.random(1, math.max(1, 15 - repeats)) == 1 then
-        local entities = {}
         for x = -1, 1, 1 do
             for y = -1, 1, 1 do
-                entities[#entities + 1] = {name = 'uranium-ore', position = {x = position.x + x, y = position.y + y}, amount = 2500}
+                Richness.create(surface, 'uranium-ore', { x = position.x + x, y = position.y + y }, 2500, 3)
             end
-        end
-        for _, entity in pairs(entities) do
-            surface.create_entity(entity)
         end
         return true
     end
@@ -371,20 +372,11 @@ local function tier4_object(expanse, surface, left_top, repeats)
     local placement_name = SA and 'rocket-silo' or 'crude-oil'
     local position = surface.find_non_colliding_position_in_box(placement_name, area, 1, false)
     if position and math.random(1, math.max(1, 20 - repeats)) == 1 then
-        if not SA then
+        if not SA or expanse.tiered_specials[4].unlocks == 3 then
             for _ = 1, 2, 1 do
                 local pos = surface.find_non_colliding_position_in_box('crude-oil', area, 1, false)
                 if pos then
-                    surface.create_entity({name = 'crude-oil', position = pos, amount = 500000})
-                end
-            end
-            return true
-        end
-        if expanse.tiered_specials[4].unlocks == 3 then
-            for _ = 1, 2, 1 do
-                local pos = surface.find_non_colliding_position_in_box('crude-oil', area, 1, false)
-                if pos then
-                    surface.create_entity({name = 'crude-oil', position = pos, amount = 500000})
+                    Richness.create(surface, 'crude-oil', pos, 500000, 4)
                 end
             end
             return true
@@ -449,18 +441,18 @@ local function tier6_object(expanse, surface, left_top, repeats) --vulcanus
                 end
             end
             surface.set_tiles(tiles)
-        elseif roll == 'titanium-ore' or roll == 'calcite' or roll == 'coal' then
+        elseif roll == 'tungsten-ore' or roll == 'calcite' or roll == 'coal' then
             for _ = 1, 36, 1 do
                 local pos = surface.find_non_colliding_position_in_box(roll, area, 1, false)
                 if pos then
-                    surface.create_entity({name = roll, position = pos, amount = 2500 + math.random(1, 500)})
+                    Richness.create(surface, roll, pos, 2500 + math.random(1, 500), 6)
                 end
             end
         elseif roll == 'sulfur' then
             for _ = 1, 5, 1 do
                 local pos = surface.find_non_colliding_position_in_box('sulfuric-acid-geyser', area, 1, false)
                 if pos then
-                    surface.create_entity({name = 'sulfuric-acid-geyser', position = pos, amount = 300000})
+                    Richness.create(surface, 'sulfuric-acid-geyser', pos, 300000, 6)
                 end
             end
         elseif roll == 'rocks' then
@@ -512,7 +504,7 @@ local function tier7_object(expanse, surface, left_top, repeats) --fulgora
             for _ = 1, 36, 1 do
                 local pos = surface.find_non_colliding_position_in_box(roll, area, 1, false)
                 if pos then
-                    surface.create_entity({name = roll, position = pos, amount = 2500 + math.random(1, 500)})
+                    Richness.create(surface, roll, pos, 2500 + math.random(1, 500), 7)
                 end
             end
             return true
@@ -628,7 +620,7 @@ local function tier9_object(expanse, surface, left_top, repeats) --aquilo
             for _ = 1, 5, 1 do
                 local pos = surface.find_non_colliding_position_in_box(roll, area, 1, false)
                 if pos then
-                    surface.create_entity({name = roll, position = pos, amount = 300000})
+                    Richness.create(surface, roll, pos, 300000, 9)
                 end
             end
         elseif roll == 'lithium-iceberg-big' or roll == 'lithium-iceberg-huge' then
@@ -808,7 +800,7 @@ function Public.convert_tiles(surface, left_top, tier, cell_size)
     surface.set_tiles(converted_tiles, true, false)
 end
 
-function Public.convert_entities(surface, left_top, tier, cell_size)
+function Public.convert_entities(surface, left_top, tier, cell_size, cloned_resources, native_source)
     local list = {}
     if SA and tier == 6 then --vulcanus
         list = {
@@ -927,27 +919,27 @@ function Public.convert_entities(surface, left_top, tier, cell_size)
             ['stone'] = 'lithium-iceberg-big',
         }
     end
+    for _, entity in ipairs(cloned_resources) do
+        if entity.valid then Richness.finish_clone(entity, list[entity.name], tier, native_source) end
+    end
     local names = {}
-    for name, _ in pairs(list) do
+    for name in pairs(list) do
         names[#names+1] = name
     end
+    if #names == 0 then return end
     local old_entities = surface.find_entities_filtered({name = names, area = {{left_top.x - 1, left_top.y - 1}, {left_top.x + cell_size + 1, left_top.y + cell_size + 1}}})
     for _, entity in pairs(old_entities) do
-        if entity and entity.valid and list[entity.name] then
-            if entity.type == 'resource' then
-                surface.create_entity({name = list[entity.name], position = entity.position, amount = entity.amount})
-            else
-                local new_entity = surface.create_entity({name = list[entity.name], position = entity.position})
-                if new_entity.name == 'gun-turret' then
-                    new_entity.insert({name = 'uranium-rounds-magazine', count = 100})
-                elseif new_entity.name == 'rocket-turret' then
-                    new_entity.insert({name = 'rocket', count = 100})
-                elseif new_entity.type == 'combat-robot' then
-                    new_entity.time_to_live = 10 * 60 * 60
-                    local e = surface.find_entities_filtered{force = {'enemy', 'neutral'}, position = new_entity.position, radius = 10, limit = 1, type = {'ammo-turret', 'simple-entity', 'logistic-container'}}
-                    if e and e[1] then
-                        new_entity.combat_robot_owner = e[1]
-                    end
+        if entity.valid and entity.type ~= 'resource' then
+            local new_entity = surface.create_entity({name = list[entity.name], position = entity.position})
+            if new_entity.name == 'gun-turret' then
+                new_entity.insert({name = 'uranium-rounds-magazine', count = 100})
+            elseif new_entity.name == 'rocket-turret' then
+                new_entity.insert({name = 'rocket', count = 100})
+            elseif new_entity.type == 'combat-robot' then
+                new_entity.time_to_live = 10 * 60 * 60
+                local e = surface.find_entities_filtered{force = {'enemy', 'neutral'}, position = new_entity.position, radius = 10, limit = 1, type = {'ammo-turret', 'simple-entity', 'logistic-container'}}
+                if e and e[1] then
+                    new_entity.combat_robot_owner = e[1]
                 end
             end
             entity.destroy()

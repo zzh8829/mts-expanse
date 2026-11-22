@@ -116,6 +116,11 @@ function Public.install(Expanse, mts, platform)
         existing.get_inventory(defines.inventory.cargo_unit).insert{name='iron-plate',count=1}
         existing.cargo_pod_destination={type=defines.cargo_destination.station,station=pad};send()
         check('incoming_other_item_reserves_shared_slot',incoming('copper-plate')==0 and #pods==1)
+        clear();dst.set_bar(2);request('iron-plate',10);src.insert{name='iron-plate',count=50};send()
+        dst.insert{name='copper-plate',count=100}
+        check('incoming_request_avoids_false_full_pad_alert',incoming('iron-plate')==10 and not Missions.rewards_blocked(state))
+        request('iron-plate',20)
+        check('unfulfilled_request_warns_about_a_full_pad',Missions.rewards_blocked(state))
         clear();request('iron-plate',100);src.insert{name='iron-plate',count=100};point.enabled=false;send()
         check('disabled_requests_pause',#pods==0)
         clear();local section=request('iron-plate',100);src.insert{name='iron-plate',count=100};section.active=false;send()

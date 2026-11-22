@@ -867,6 +867,7 @@ local function set_source_surface(state)
         surface = game.create_surface(source_name, map_gen_settings)
         created = true
     end
+    if not state.override_nauvis then return surface end
     local map_gen_settings = surface.map_gen_settings
     map_gen_settings.autoplace_controls = {
         ['coal'] = { frequency = 6, size = 0.7, richness = 0.5 },
@@ -883,6 +884,7 @@ local function set_source_surface(state)
     map_gen_settings.starting_area = state.map_starting_area
     map_gen_settings.default_enable_all_autoplace_controls = false
     surface.map_gen_settings = map_gen_settings
+    expanse.meta_map.scripted_ore_chunks = nil
     expanse.meta_map.source_surface = source_name
     expanse.meta_map.shared_seed = expanse.shared_seed
     expanse.meta_map.biome_offset = expanse.shared_biome_offset
@@ -1188,7 +1190,12 @@ local function on_resource_depleted(event)
         bonus = math.random(1, 3)
     end
     if roll == 1 then
-        ore.surface.create_entity({ name = 'uranium-ore', position = ore.position, amount = 200 + math.floor(distance) * bonus })
+        local amount = 200 + math.floor(distance) * bonus
+        if state and state.active_surface_index == ore.surface.index then
+            Functions.richness.create(ore.surface, 'uranium-ore', ore.position, amount)
+        else
+            ore.surface.create_entity({ name = 'uranium-ore', position = ore.position, amount = amount })
+        end
     end
 end
 
@@ -1207,13 +1214,16 @@ local function on_chunk_generated(event)
     local state = state_from_surface(surface)
 
     if not state or surface.index ~= state.active_surface_index then
-        if state and state.override_nauvis and surface.name == state.source_surface then
-                for _, e in pairs(surface.find_entities_filtered({ area = event.area, name = { 'iron-ore', 'copper-ore', 'coal', 'stone', 'uranium-ore' } })) do
+        if state and surface.name == state.source_surface then
+            Functions.richness.record_source_chunk(state, surface, event.area.left_top)
+            if state.override_nauvis then
+                for _, e in pairs(surface.find_entities_filtered({ area = event.area, name = Functions.richness.source_ores })) do
                     surface.create_entity({ name = e.name, position = e.position, amount = 500 + math.sqrt(e.position.x ^ 2 + e.position.y ^ 2) * 3 })
                     e.destroy()
                 end
                 generate_ore(surface, event.area.left_top, state)
                 destroy_natural_enemy_entities(surface, event.area)
+            end
         end
         return
     end
@@ -1299,7 +1309,8 @@ end
 -- builds a shared surface and moves every player of every team onto it.
 function Public.forfeit_impl.command_state(force_name)
     if not is_mts_active() then
-        return state_from_force_name(force_name or DEFAULT_FORCE_NAME)
+        if force_name and force_name ~= DEFAULT_FORCE_NAME then return nil end
+        return state_from_force_name(DEFAULT_FORCE_NAME)
     end
     if not (is_team_force_name(force_name) and game.forces[force_name]) then
         return nil
@@ -2864,12 +2875,14 @@ local function cmd_handler(event, admin_required)
 end
 
 local function state_from_command(player, parameter)
-    local force_name = parameter and parameter:match('^%s*(team%-%d+)%s*$')
-    if force_name then
-        return Public.forfeit_impl.command_state(force_name)
+    if parameter and parameter:find('%S') then
+        -- Treat the entire argument as the target. A typo must never fall back
+        -- to resetting the caller's world.
+        return Public.forfeit_impl.command_state(parameter:match('^%s*(.-)%s*$'))
     end
     if player and player.valid then
-        return state_from_player(player)
+        -- The admin can be looking at a different team's surface in map view.
+        return Public.forfeit_impl.command_state(is_mts_active() and player.force.name or nil)
     end
     return Public.forfeit_impl.command_state(nil)
 end
@@ -3026,11 +3039,14 @@ commands.add_command(
                 if state then
 				    map_reset({ force_name = state_key(state) })
 				    state_print(state, (player and player.name or 'Server') .. ' has reset the map.')
-                elseif player and player.valid then
-                    player.print('Join a Multi-Team Support team before resetting Expanse, or name an existing team: /expanse-reset team-N')
                 else
-                    rcon.print('No such Expanse team. Usage: /expanse-reset team-N')
-                    log('[mts-expanse] reset refused: no such Expanse team')
+                    local usage = is_mts_active() and 'Name an existing Expanse team: /expanse-reset team-N' or 'Usage: /expanse-reset'
+                    if player and player.valid then
+                        player.print(usage)
+                    else
+                        rcon.print(usage)
+                        log('[mts-expanse] reset refused: ' .. usage)
+                    end
                 end
 			end
 		end
@@ -3442,8 +3458,7 @@ commands.add_command(
         end
 
         local container = state.containers and state.containers[target.unit_number]
-        local point = target.entity.valid and target.entity.get_logistic_point(defines.logistic_member_index.logistic_container) or nil
-        local section = point and point.get_section(1) or nil
+        local section = container and container.request_section
         local ok, slot = pcall(function()
             return section and section.get_slot(1) or nil
         end)
@@ -3537,8 +3552,7 @@ commands.add_command(
         end
 
         local container = state.containers and state.containers[entity.unit_number] or nil
-        local point = entity.valid and entity.get_logistic_point(defines.logistic_member_index.logistic_container) or nil
-        local section = point and point.get_section(1) or nil
+        local section = container and container.request_section
         local ok_slot, slot = pcall(function()
             return section and section.get_slot(1) or nil
         end)

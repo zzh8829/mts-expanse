@@ -3,7 +3,9 @@
 local Event = require 'utils.event'
 local SpaceMissions = require 'maps.expanse.space_missions'
 local Model = require 'maps.expanse.missions.model'
+local Cargo = require 'maps.expanse.missions.cargo'
 local Data = require 'maps.expanse.mission_data'
+local Functions = require 'maps.expanse.functions'
 local Public = {}
 
 local TIER, LEVEL = 4, 2
@@ -17,6 +19,76 @@ local function section_counts(section)
         if filter.value then counts[filter.value.name] = filter.min end
     end
     return counts
+end
+
+local function check_station_sections(check, state, data)
+    local chest = data.cargo_chest
+    local point = chest.get_requester_point()
+    local position = chest.surface.find_non_colliding_position('requester-chest', chest.position, 7, 1, true)
+    local peer = chest.surface.create_entity{name = 'requester-chest', position = position, force = chest.force}
+    local group = peer.get_requester_point().get_section(1)
+    group.group = 'Station test group'
+    group.set_slot(1, {value = {name = 'copper-plate', quality = 'normal', comparator = '='}, min = 27})
+    point.get_section(1).group = group.group
+    Cargo.tick(state, data)
+    check('other_chests_keep_their_shared_requests', section_counts(group)['copper-plate'] == 27)
+    check('station_writes_a_separate_request', section_counts(point.get_section(2))['space-platform-starter-pack'] == 1)
+
+    local red = defines.wire_connector_id.circuit_red
+    chest.get_wire_connector(red, true).connect_to(peer.get_wire_connector(red, true), false)
+    chest.get_or_create_control_behavior().set_requests = true
+    for i = point.sections_count, 1, -1 do
+        if point.get_section(i).is_manual then point.remove_section(i) end
+    end
+    local circuit = point.get_section(1)
+    assert(circuit and circuit.type == defines.logistic_section_type.circuit_controlled)
+    Cargo.tick(state, data)
+    check('circuit_section_survives_station_update', circuit.valid and not circuit.is_manual)
+    check('station_restores_deleted_request_section', section_counts(point.get_section(2))['space-platform-starter-pack'] == 1)
+end
+
+local function check_hungry_chest_sections(check, state)
+    local unit, hidden = next(state.containers)
+    local entity = hidden.entity
+    local point = entity.get_requester_point()
+    check('hidden_chest_starts_without_requests', not hidden.revealed and point.sections_count == 0)
+    local position = entity.surface.find_non_colliding_position('constant-combinator', entity.position, 8, 1, true)
+    local peer = entity.surface.create_entity{name = 'constant-combinator', position = position, force = entity.force}
+    local red = defines.wire_connector_id.circuit_red
+    entity.get_wire_connector(red, true).connect_to(peer.get_wire_connector(red, true), false)
+    entity.get_or_create_control_behavior().set_requests = true
+    local circuit = point.get_section(1)
+    assert(circuit and not circuit.is_manual)
+    local user = point.add_section('Frontier supply')
+    user.set_slot(1, {value = {name = 'copper-plate', quality = 'normal', comparator = '='}, min = 27})
+    Functions.set_container(state, entity, hidden.left_top, false)
+    Functions.set_container(state, entity, hidden.left_top, true)
+    local revealed = state.containers[unit]
+    local price = revealed.price[1]
+    local offer = revealed.request_section.get_slot(1)
+    check('reveal_uses_a_private_section', offer.value.name == price.name and offer.value.quality == price.quality and offer.min == price.count)
+    check('reveal_preserves_circuit_and_user_requests', circuit.valid and user.valid and section_counts(user)['copper-plate'] == 27)
+    local section = revealed.request_section
+    point.remove_section(section.index)
+    Functions.set_container(state, entity, hidden.left_top, false)
+    check('unchanged_offer_restores_deleted_section', revealed.request_section.get_slot(1).min == price.count)
+    local restored = revealed.request_section
+    entity.insert{name = 'coin', count = 1}
+    Functions.set_container(state, entity, hidden.left_top, true)
+    check('reroll_reuses_the_private_section', state.containers[unit].request_section == restored and user.valid and circuit.valid)
+
+    -- Saves from 0.1.25 tracked the offer by signature, without a section handle.
+    local other_unit, other = next(state.containers, unit)
+    Functions.set_container(state, other.entity, other.left_top, true)
+    other = state.containers[other_unit]
+    local old = other.request_section
+    other.request_section = nil
+    Functions.set_container(state, other.entity, other.left_top, false)
+    check('legacy_offer_reuses_its_original_section', other.request_section == old)
+    old.set_slot(1, {value = {name = 'space-platform-starter-pack', quality = 'normal', comparator = '='}, min = 987})
+    other.request_section = nil
+    Functions.set_container(state, other.entity, other.left_top, false)
+    check('legacy_player_filters_survive_upgrade', other.request_section ~= old and old.get_slot(1).min == 987)
 end
 
 local function build_silo(state, surface, force)
@@ -49,6 +121,13 @@ function Public.install(Expanse, mts)
         if mts then Expanse.reset(target) end
         storage.station_test = {checks = {}, phase = 'build'}
     end)
+    Event.add(defines.events.on_rocket_launch_ordered, function(event)
+        local audit = storage.station_test
+        if not audit or event.rocket_silo ~= audit.silo then return end
+        local cargo = event.rocket.attached_cargo_pod.get_inventory(defines.inventory.cargo_unit)
+        local stack = cargo.find_item_stack(ITEM)
+        audit.payload_health = stack and stack.health
+    end)
     Event.on_nth_tick(30, function()
         local audit = storage.station_test
         if audit.done or game.tick < 600 then return end
@@ -58,6 +137,17 @@ function Public.install(Expanse, mts)
         local function check(name, condition) assert(condition, name); audit.checks[name] = true end
 
         if audit.phase == 'build' then
+            -- Exercise every cargo definition through the same model that builds
+            -- the mission board. A missing item or quality also breaks loading.
+            local quality_enabled = script.active_mods['quality'] ~= nil
+            for tier, steps in pairs(Data.costs) do
+                for level = 1, #steps - 1 do
+                    local view = Model.build({missions = {[tier] = {level = level, delivered = {}}}}, tier)
+                    for _, item in ipairs(view.items) do assert(prototypes.quality[item.quality], item.quality) end
+                end
+            end
+            local module = quality_enabled and 'quality-module-2|normal' or 'efficiency-module-2|normal'
+            check('hephaestus_requests_available_modules', Data.costs[6][7][module] == 50)
             audit.silo = build_silo(state, surface, force)
             audit.phase = 'station'
             return
@@ -74,7 +164,7 @@ function Public.install(Expanse, mts)
             check('station_is_protected', not chest.destructible and not chest.minable_flag and not combinator.destructible)
             check('station_survives_base_reset', Expanse.forfeit_impl.is_preserved_force_entity(state, chest)
                 and Expanse.forfeit_impl.is_preserved_force_entity(state, combinator))
-            chest.insert{name = ITEM, count = 4}
+            chest.insert{name = ITEM, count = 4, health = 0.5}
             audit.phase = 'signals'
             -- The station is refreshed once a second; give it two refreshes.
             audit.resume_tick = game.tick + 120
@@ -85,7 +175,7 @@ function Public.install(Expanse, mts)
             -- Requests are the chest's target content; the signal is what is still missing from it.
             check('chest_requests_only_the_outstanding_item', requests[ITEM] == 10 and table_size(requests) == 1)
             check('combinator_shows_what_is_missing_from_the_chest', signals[ITEM] == 6 and table_size(signals) == 1)
-            chest.insert{name = ITEM, count = 6 + SURPLUS}
+            chest.insert{name = ITEM, count = 6 + SURPLUS, health = 0.5}
             audit.phase = 'launch'
         elseif audit.phase == 'launch' then
             if state.missions[TIER].level == LEVEL then
@@ -96,6 +186,7 @@ function Public.install(Expanse, mts)
             end
             check('part_load_launches_and_completes_the_step', state.missions[TIER].level == LEVEL + 1)
             check('surplus_stays_in_the_chest', chest.get_item_count(ITEM) == SURPLUS)
+            check('cargo_keeps_item_health', audit.payload_health and math.abs(audit.payload_health - 0.5) < 0.01)
             audit.phase = 'next_step'
         elseif audit.phase == 'next_step' then
             local requests = section_counts(chest.get_requester_point().get_section(1))
@@ -110,7 +201,16 @@ function Public.install(Expanse, mts)
             SpaceMissions.sync_unlocks(state)
             check('researched_mission_reopens', state.missions[TIER].level == 1)
 
-            check('command_refuses_unknown_team', (not mts) or Expanse.forfeit_impl.command_state('team-99') == nil)
+            local admin = {valid = true, force = force, surface = surface}
+            check('reset_typo_never_targets_own_world', Expanse.test_reset_target(admin, 'team 1') == nil
+                and Expanse.test_reset_target(admin, 'team-1 extra') == nil)
+            check('command_refuses_unknown_team', Expanse.test_reset_target(admin, 'team-99') == nil)
+            check('reset_accepts_current_and_explicit_target', Expanse.test_reset_target(admin, nil) == state
+                and Expanse.test_reset_target(nil, '  ' .. target .. '  ') == state)
+            if mts then
+                local observer = {valid = true, force = game.forces.player, surface = surface}
+                check('viewing_team_surface_does_not_target_it_for_reset', Expanse.test_reset_target(observer, nil) == nil)
+            end
             check('command_refuses_default_state_under_mts', (Expanse.forfeit_impl.command_state(nil) == nil) == mts)
             check('remote_reset_refuses_default_state_under_mts', (not mts) or Expanse.reset() == false)
 
@@ -126,6 +226,8 @@ function Public.install(Expanse, mts)
             check('gaia_fruit_migrates_once', old.space_production['yumako|normal'] == 4 and old.space_production['jellynut|normal'] == 4)
             check('gaia_no_longer_changes_spoil_time', Data.rewards[8][4].script == nil and Data.rewards[8][4].production['yumako|normal'] == 4)
 
+            check_station_sections(check, state, data)
+            check_hungry_chest_sections(check, state)
             helpers.write_file('station-result.json', helpers.table_to_json(audit.checks))
             audit.done = true
         end

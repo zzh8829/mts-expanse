@@ -3,6 +3,7 @@
 local Model = require 'maps.expanse.missions.model'
 local Pins = require 'maps.expanse.missions.pins'
 local Ships = require 'maps.expanse.missions.ships'
+local SpaceMissions = require 'maps.expanse.space_missions'
 local Text = require 'maps.expanse.missions.text'
 local W = require 'maps.expanse.widgets'
 
@@ -91,10 +92,11 @@ end
 
 local function waiting_in_orbit(state)
     local stored = {}
-    local hub = state.nonspace_pad
-    local inventory = hub and hub.valid and hub.get_inventory(defines.inventory.cargo_landing_pad_main)
-    for _, item in pairs(inventory and inventory.get_contents() or {}) do
-        stored[item.name .. '|' .. (item.quality or 'normal')] = item.count
+    for _, inventory in ipairs(SpaceMissions.reward_storage(state)) do
+        for _, item in pairs(inventory.get_contents()) do
+            local key = item.name .. '|' .. (item.quality or 'normal')
+            stored[key] = (stored[key] or 0) + item.count
+        end
     end
     return stored
 end
@@ -108,14 +110,18 @@ function Public.receive(parent, state)
     else
         W.label(parent, { 'expanse-missions.receive_nopad', Ships.ring(state, Ships.FIRST_TIER) }, nil, W.GOLD)
     end
+    local production = state.space_production or {}
+    local stored = waiting_in_orbit(state)
     local keys = {}
-    for key in pairs(state.space_production or {}) do keys[#keys + 1] = key end
+    for key in pairs(production) do keys[#keys + 1] = key end
+    for key in pairs(stored) do
+        if not production[key] then keys[#keys + 1] = key end
+    end
     if #keys == 0 then
         W.label(parent, { 'expanse-missions.receive_none' }, nil, W.GREY)
         return
     end
     table.sort(keys)
-    local stored = waiting_in_orbit(state)
     local rows = parent.add { type = 'table', column_count = 4 }
     rows.style.horizontal_spacing = 16
     rows.style.top_margin = 6
@@ -124,7 +130,7 @@ function Public.receive(parent, state)
         local name, quality = Model.split_key(key)
         W.item_slot(rows, name, quality)
         W.label(rows, Text.item_name(name, quality)).style.width = 220
-        W.label(rows, '+' .. state.space_production[key])
+        W.label(rows, production[key] and '+' .. production[key] or '—')
         W.label(rows, tostring(stored[key] or 0))
     end
 end

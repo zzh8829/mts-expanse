@@ -21,11 +21,12 @@ def run_case(name, mts=False, ticks=9000):
     main = mod / 'maps/expanse/main.lua'
     text = main.read_text()
     pos = text.rindex('return Public')
-    main.write_text(text[:pos] + "function Public.test_state(name) return state_from_force_name(name) end\n" + text[pos:])
+    main.write_text(text[:pos] + "Public.test_state = state_from_force_name\nPublic.test_reset_target = state_from_command\n" + text[pos:])
     control = mod / 'control.lua'
     control.write_text(control.read_text() + f"\nrequire('station_probe').install(Expanse,{str(mts).lower()})\n")
     shutil.copyfile(ROOT / 'scripts/mission-station-probe.lua', mod / 'station_probe.lua')
-    mods = [{'name': n, 'enabled': True} for n in ['base', 'quality', 'elevated-rails', 'space-age', 'mts-expanse']]
+    mods = [{'name': n, 'enabled': True} for n in ['base', 'elevated-rails', 'space-age', 'mts-expanse']]
+    mods.append({'name': 'quality', 'enabled': name != 'no-quality'})
     if mts:
         (path / 'mods' / MTS.name).symlink_to(MTS)
         mods.append({'name': 'multi-team-support', 'enabled': True})
@@ -50,6 +51,6 @@ def run_case(name, mts=False, ticks=9000):
 
 
 if __name__ == '__main__':
-    cases = {'nonorbit': False, 'mts': True}
+    cases = {'nonorbit': False, 'no-quality': False, 'mts': True}
     for name in os.environ.get('STATION_CASES', ','.join(cases)).split(','):
         run_case(name, cases[name])

@@ -323,7 +323,7 @@ Public.costs = {
         [7] = {
             ['assembling-machine-3|normal'] = 20,
             ['electromagnetic-plant|normal'] = 10,
-            ['quality-module-2|normal'] = 50,
+            [script.active_mods['quality'] and 'quality-module-2|normal' or 'efficiency-module-2|normal'] = 50,
             ['chemical-plant|normal'] = 40,
         },
         [8] ={
