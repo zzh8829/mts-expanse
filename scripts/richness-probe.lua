@@ -81,26 +81,43 @@ end
 -- A native source can contain both native and scripted chunks after changing
 -- the terrain setting during play. Oil is native in both kinds of chunk.
 local function check_source_setting_change(expanse)
-    local source, active, native_iron
-    local native_cell = {x=0, y=60}
-    local scripted_cell = {x=960, y=0}
+    local source, active, native_iron, native_uranium, native_calcite
+    local native_cell = {x = 0, y = 60}
+    local scripted_cell = {x = 960, y = 0}
     Event.on_nth_tick(1, function()
         if game.tick == 6 and not settings.global['mts-expanse-override-nauvis'].value then
             local state = expanse.test_richness_state('player')
             source = game.surfaces[state.source_surface]
             active = game.surfaces[state.active_surface_index]
-            native_iron = seed_source(source, 'iron-ore', {x=4.5, y=64.5}, 1200)
-            settings.global['mts-expanse-override-nauvis'] = {value=true}
+            -- A modded native source can have different sliders than the save.
+            local map_settings = source.map_gen_settings
+            map_settings.autoplace_controls['uranium-ore'].richness = 1.5
+            local disabled_calcite = prototypes.entity.calcite and multiplier('calcite') == 0
+            if disabled_calcite then
+                map_settings.autoplace_controls.calcite = {richness = 2, size = 1, frequency = 1}
+            end
+            source.map_gen_settings = map_settings
+            native_iron = seed_source(source, 'iron-ore', {x = 4.5, y = 64.5}, 1200)
+            native_uranium = seed_source(source, 'uranium-ore', {x = 8.5, y = 64.5}, 1200)
+            if disabled_calcite then
+                native_calcite = seed_source(source, 'calcite', {x = 12.5, y = 64.5}, 1200)
+            end
+            settings.global['mts-expanse-override-nauvis'] = {value = true}
         elseif game.tick == 8 and native_iron then
             local state = expanse.test_richness_state('player')
             assert(state.override_nauvis, 'the runtime terrain setting did not change')
-            local new_iron = seed_source(source, 'iron-ore', {x=964.5, y=4.5}, 1200)
-            local new_oil = seed_source(source, 'crude-oil', {x=970.5, y=7.5}, 120000)
+            local new_iron = seed_source(source, 'iron-ore', {x = 964.5, y = 4.5}, 1200)
+            local new_oil = seed_source(source, 'crude-oil', {x = 970.5, y = 7.5}, 120000)
             -- Keep the distant cell on Nauvis so the same resource is compared.
             state.tier_distance_thresholds = {2000, 2100, 2200, 2300, 2400, 2500}
             Functions.expand(state, scripted_cell)
             Functions.expand(state, native_cell)
             expect(at(active, 'iron-ore', native_iron.position).amount, 1200, 'old native chunk after setting change')
+            expect(at(active, 'uranium-ore', native_uranium.position).amount, 1200 * multiplier('uranium-ore') / 1.5,
+                'native deposit with a different source slider')
+            if native_calcite then
+                assert(not at(active, 'calcite', native_calcite.position), 'native deposit with a disabled target slider')
+            end
             expect(at(active, 'iron-ore', new_iron.position).amount, 1200 * multiplier('iron-ore'), 'new scripted iron')
             expect(at(active, 'crude-oil', new_oil.position).amount, 120000, 'native oil in mixed source')
             helpers.write_file('richness-toggle-ok', 'passed')
