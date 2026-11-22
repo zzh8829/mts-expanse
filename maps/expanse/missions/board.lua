@@ -63,13 +63,13 @@ end
 
 -- First mission a team can act on, so the window opens on something useful.
 local function default_entry(state)
-    local fallback = Ships.FIRST_TIER
+    local first_unfound
     for tier = Ships.FIRST_TIER, Ships.LAST_TIER do
         local status = Model.stage(state, tier).status
         if status == 'active' then return tier end
-        if status == 'nosilo' and fallback == Ships.FIRST_TIER then fallback = tier end
+        if status == 'nosilo' and not first_unfound then first_unfound = tier end
     end
-    return fallback
+    return first_unfound or Ships.FIRST_TIER
 end
 
 function Public.is_open(player)

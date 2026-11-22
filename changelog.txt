@@ -1,4 +1,22 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.26
+Date: 21. 11. 2026
+  Bugfixes:
+    - Mission cargo stations and hungry chests keep their own request section. Wiring a chest for
+      circuit requests no longer raises a Lua error. Other chests in a named group keep their filters.
+    - Hephaestus step 7 accepts efficiency module 2s when Quality is disabled. Opening the mission
+      board or processing the station at this step now works in Space Age without Quality.
+    - Loading a mission rocket preserves the original item stacks, including damage and spoilage,
+      even when only part of a stack is needed.
+    - The mission board counts one-time and recurring rewards by quality in the active hub and
+      overflow storage. It selects the first undiscovered ship when no active mission is available.
+    - Replacement cargo chests and landing pads regain their tooltips. An open silo panel follows
+      the replacement chest and displays the configured automatic launch weight.
+    - Landing-pad alerts count deliveries already in flight when checking the team's requests.
+    - Autostash keeps individually pinned equipment and distributes furnace inputs by quality.
+    - A mistyped map reset target leaves the map intact. An admin who omits the team name resets
+      their own team's map even when viewing another surface.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.25
 Date: 19. 11. 2026
   Major Features:

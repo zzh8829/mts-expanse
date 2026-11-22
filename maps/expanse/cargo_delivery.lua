@@ -7,6 +7,16 @@ local function key(name, quality)
     return name .. '|' .. (quality or 'normal')
 end
 
+local function pad_stock(destination, incoming)
+    local stock = {}
+    for _, item in pairs(destination.get_contents()) do stock[key(item.name, item.quality)] = item.count end
+    for _, item in pairs(incoming) do
+        local id = key(item.name, item.quality)
+        stock[id] = (stock[id] or 0) + item.count
+    end
+    return stock
+end
+
 local function request_limits(pad, point)
     if not point.enabled then return {} end
     local configured = false
@@ -45,8 +55,7 @@ function Public.blocked_by_space(sources, pad)
     if not (destination and point) then return false end
     local limits = request_limits(pad, point)
     if limits and not next(limits) then return false end
-    local stock = {}
-    for _, item in pairs(destination.get_contents()) do stock[key(item.name, item.quality)] = item.count end
+    local stock = limits and pad_stock(destination, point.targeted_items_deliver)
     for _, inventory in ipairs(sources) do
         for _, item in pairs(inventory.get_contents()) do
             local id = key(item.name, item.quality)
@@ -72,11 +81,9 @@ function Public.send(source, launcher, pad, extra_sources, cursor)
     -- newly planned stacks here accounts for different items sharing free slots.
     local capacity = game.create_inventory(slots)
     for i = 1, slots do capacity[i].set_stack(destination[i]) end
-    local stock = {}
-    for _, item in pairs(destination.get_contents()) do stock[key(item.name, item.quality)] = item.count end
-    for _, item in pairs(point.targeted_items_deliver) do
-        local id = key(item.name, item.quality)
-        stock[id] = (stock[id] or 0) + item.count
+    local incoming = point.targeted_items_deliver
+    local stock = pad_stock(destination, incoming)
+    for _, item in pairs(incoming) do
         if capacity.insert(item) < item.count then
             capacity.destroy()
             return -- Existing incoming cargo already uses all remaining space.

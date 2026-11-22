@@ -664,7 +664,7 @@ local function auto_stash(player, event)
 
     this.floating_text_y_offsets = {}
 
-    local hotbar_items = {}
+    local hotbar_items, hotbar_instances = {}, {}
     -- Quick bar slots are addressed by page and slot, and hold more than item
     -- filters (blueprint records, spidertron remotes, single item instances).
     for page = 1, 10 do
@@ -674,22 +674,24 @@ local function auto_stash(player, event)
             local name = type(filter) == 'table' and filter.name or filter
             if name then
                 hotbar_items[name] = true
+            elseif entry and entry.item then
+                hotbar_instances[#hotbar_instances + 1] = entry.item
             end
         end
     end
 
-    local furnace_fuels =
-    {
-        ['coal'] = { count = 0, quality = nil },
-        ['iron-ore'] = { count = 0, quality = nil },
-        ['copper-ore'] = { count = 0, quality = nil },
-        ['stone'] = { count = 0, quality = nil }
-    }
+    local furnace_fuels = {}
 
     local full_insert = { full = nil, name = nil }
     for i = #inventory, 1, -1 do
         if not inventory[i].valid_for_read then
             goto continue
+        end
+        local instance = inventory[i].item
+        if instance then
+            for _, pinned in ipairs(hotbar_instances) do
+                if instance == pinned then goto continue end
+            end
         end
         local name = inventory[i].name
         local is_resource = this.whitelist[name]
@@ -698,9 +700,10 @@ local function auto_stash(player, event)
             if ctrl and this.insert_into_furnace then
                 if button == defines.mouse_button_type.right then
                     if is_furnace_fuel or is_resource then
-                        furnace_fuels[name] = furnace_fuels[name] or { count = 0, quality = nil }
-                        furnace_fuels[name].count = furnace_fuels[name].count + inventory[i].count
-                        furnace_fuels[name].quality = inventory[i].quality
+                        local quality = inventory[i].quality.name
+                        local amounts = furnace_fuels[name] or {}
+                        amounts[quality] = (amounts[quality] or 0) + inventory[i].count
+                        furnace_fuels[name] = amounts
                     end
                 end
             elseif shift and this.insert_into_wagon then -- insert into wagon
@@ -719,15 +722,13 @@ local function auto_stash(player, event)
             elseif button == defines.mouse_button_type.left then -- all items to nearby chests
                 full_insert = { full = insert_item_into_chest(inventory[i], chests, filtered_chests, name, floaty_text_list, full_insert), name = name }
             end
-            if not full_insert.success then
-                hotbar_items[#hotbar_items + 1] = name
-            end
         end
         ::continue::
     end
-    for item_name, item_data in pairs(furnace_fuels) do
-        local stack = { name = item_name, count = item_data.count, quality = item_data.quality }
-        insert_to_furnace(inventory, stack, chests, floaty_text_list)
+    for name, amounts in pairs(furnace_fuels) do
+        for quality, count in pairs(amounts) do
+            insert_to_furnace(inventory, { name = name, count = count, quality = quality }, chests, floaty_text_list)
+        end
     end
 
     for _, texts in pairs(floaty_text_list) do

@@ -44,8 +44,13 @@ end
 -- What decides which elements the panel has. Everything else is a number or a
 -- caption and is written into the open panel, so it never flickers and a
 -- player moving items through the chest slots is not interrupted.
-local function layout_key(stage, outstanding, standing, has_chest)
-    return table.concat({ stage.status, stage.step, tostring(standing), tostring(has_chest), table.concat(sorted_keys(outstanding), ';') }, '/')
+local function layout_key(state, data, stage)
+    local chest = data.cargo_chest
+    return table.concat({
+        data.entity.unit_number, chest and chest.valid and chest.unit_number or 0,
+        stage.status, stage.step, tostring(rocket_standing(data.entity)), Ships.launch_weight(state),
+        table.concat(sorted_keys(Model.outstanding(state, data.tier)), ';'),
+    }, '/')
 end
 
 -- Bottom number: still to launch. Top number: already in the cargo chest. An
@@ -88,7 +93,7 @@ local function fill_cargo(inner, weight, ready)
     inner.launch.enabled = ready
 end
 
-local function cargo_block(parent, silo, weight, ready)
+local function cargo_block(parent, silo, weight, ready, threshold)
     parent.add { type = 'line' }.style.top_margin = 6
     if rocket_standing(silo) then
         parent.add { type = 'label', name = 'cargo' }.style.font = 'default-bold'
@@ -98,7 +103,7 @@ local function cargo_block(parent, silo, weight, ready)
         -- hold to read; the cargo chest keeps collecting meanwhile.
         W.label(parent, { 'expanse-missions.panel_no_rocket' }, 'default-bold')
     end
-    W.label(parent, { 'expanse-missions.panel_rule', Ships.format_weight(Ships.ROCKET_WEIGHT) }, nil, W.GREY)
+    W.label(parent, { 'expanse-missions.panel_rule', Ships.format_weight(threshold) }, nil, W.GREY)
     local button = parent.add { type = 'button', name = 'launch', caption = { 'expanse-missions.panel_launch' }, style = 'confirm_button',
         tags = { [W.TAG] = 'launch', unit = silo.unit_number } }
     button.style.top_margin = 6
@@ -155,7 +160,7 @@ local function build(player, state, silo, data, key)
     W.label(inner, { 'expanse-missions.step_of', stage.step, stage.steps }, 'default-bold')
     needed_grid(inner, Model.outstanding(state, tier), chest)
     local weight = Model.inventory_weight(Model.rocket_inventory(silo))
-    cargo_block(inner, silo, weight, ready_to_launch(silo, weight))
+    cargo_block(inner, silo, weight, ready_to_launch(silo, weight), Ships.launch_weight(state))
     chest_block(inner, chest)
 end
 
@@ -181,7 +186,7 @@ function Public.show(player, state, silo)
         return
     end
     local stage = Model.stage(state, data.tier)
-    local key = layout_key(stage, Model.outstanding(state, data.tier), rocket_standing(silo), chest_inventory(data) ~= nil)
+    local key = layout_key(state, data, stage)
     local frame = player.gui.relative[Public.FRAME]
     if frame and frame.tags.key == key then
         update(frame, state, silo, data)

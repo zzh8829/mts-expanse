@@ -7,6 +7,7 @@ local Token = require 'utils.token'
 local ExpanseEvents = require 'maps.expanse.events'
 local format_number = require 'util'.format_number
 local ChestTooltip = require 'maps.expanse.chest_tooltip'
+local RequestSection = require 'maps.expanse.request_section'
 local Public = {}
 
 -- main.lua is at Lua's 200-local limit, so it reaches this through Functions.
@@ -356,20 +357,12 @@ local function destroy_container_renders(container)
     end
 end
 
-local function clear_container_requests(entity)
-    if not (entity and entity.valid) then
-        return
-    end
-
+local function remove_empty_default_section(entity)
     local logi = entity.get_logistic_point(defines.logistic_member_index.logistic_container)
-    if not logi then
-        return
-    end
-
-    for i = 1, 256, 1 do
-        if logi.get_section(i) then
-            logi.remove_section(i)
-        end
+    local first = logi and logi.get_section(1)
+    if RequestSection.is_private(first) and logi.sections_count == 1 and first.filters_count == 0
+        and first.active and first.multiplier == 1 then
+        logi.remove_section(1)
     end
 end
 
@@ -402,7 +395,7 @@ local function register_container(expanse, entity, known_left_top)
             surface_index = expanse.active_surface_index
         }
         expanse.containers[entity.unit_number] = container
-        clear_container_requests(entity)
+        remove_empty_default_section(entity)
         return container
     end
 
@@ -417,10 +410,6 @@ local function register_container(expanse, entity, known_left_top)
     end
     container.force_name = expanse.force_name
     container.surface_index = expanse.active_surface_index
-    if not container.revealed then
-        clear_container_requests(entity)
-    end
-
     return container
 end
 
@@ -1394,6 +1383,8 @@ local function init_container(expanse, entity, budget, known_left_top)
         left_top = left_top,
         price = price,
         revealed = true,
+        request_section = existing and existing.request_section,
+        request_signature = existing and existing.request_signature,
         reroll_generation = reroll_generation,
         force_name = expanse.force_name,
         surface_index = expanse.active_surface_index
@@ -1424,6 +1415,23 @@ local function price_request_signature(price)
     return table.concat(parts, ';')
 end
 
+-- Older saves recorded only the price signature. Reuse their section only if
+-- it still contains the exact requests last written by Expanse.
+local function legacy_request_section(logi, signature)
+    if not signature then return nil end
+    local first = logi.get_section(1)
+    if not RequestSection.is_private(first) then return nil end
+    local requests = {}
+    for slot = 1, first.filters_count do
+        local filter = first.get_slot(slot)
+        local value = filter.value
+        if not value or (value.type or 'item') ~= 'item' or (value.comparator or '=') ~= '='
+            or not filter.min or filter.max then return nil end
+        requests[slot] = { name = value.name, quality = value.quality or 'normal', count = filter.min }
+    end
+    if price_request_signature(requests) == signature then return first end
+end
+
 local function sync_container_requests(container, force)
     local signature = price_request_signature(container.price)
     if container.tooltip_signature ~= signature then
@@ -1434,23 +1442,14 @@ local function sync_container_requests(container, force)
     if not logi then
         return
     end
-    if not force and container.request_signature == signature then
-        return
-    end
-    for i = 1, 256, 1 do
-        if logi.get_section(i) then
-            logi.remove_section(i)
-        end
-    end
-
-    logi.add_section()
-    local section = logi.get_section(1)
-
-    for slot = 1, #container.price, 1 do
-        if #container.price >= slot then
-            local item = container.price[slot]
-            section.set_slot(slot, { value = {type = 'item', name = item.name, quality = item.quality, comparator = '='}, min = item.count })
-        end
+    local previous = container.request_section or legacy_request_section(logi, container.request_signature)
+    local section = RequestSection.acquire(logi, previous)
+    if not section then return end
+    container.request_section = section
+    if not force and previous == section and container.request_signature == signature then return end
+    for slot = section.filters_count, 1, -1 do section.clear_slot(slot) end
+    for slot, item in ipairs(container.price) do
+        section.set_slot(slot, { value = {type = 'item', name = item.name, quality = item.quality, comparator = '='}, min = item.count })
     end
     container.request_signature = signature
 end

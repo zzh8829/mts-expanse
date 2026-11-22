@@ -7,9 +7,12 @@
 -- exactly as it does for a mouse click.
 local Event = require 'utils.event'
 local Data = require 'maps.expanse.mission_data'
+local Functions = require 'maps.expanse.functions'
 local Model = require 'maps.expanse.missions.model'
 local Board = require 'maps.expanse.missions.board'
 local SiloPanel = require 'maps.expanse.missions.silo_panel'
+local Detail = require 'maps.expanse.missions.board_detail'
+local Tooltips = require 'maps.expanse.missions.tooltips'
 local ForfeitDialog = require 'maps.expanse.forfeit_dialog'
 local W = require 'maps.expanse.widgets'
 local Public = {}
@@ -23,9 +26,9 @@ local function dispatch(event_id, fields)
     script.get_event_handler(event_id)(fields)
 end
 
-local function click(element)
+local function click(element, button, control)
     dispatch(defines.events.on_gui_click, { player_index = element.player_index, element = element,
-        button = defines.mouse_button_type.left, alt = false, control = false, shift = false, cursor_display_location = { x = 0, y = 0 } })
+        button = button or defines.mouse_button_type.left, alt = false, control = control or false, shift = false, cursor_display_location = { x = 0, y = 0 } })
 end
 
 local function type_text(field, text)
@@ -94,6 +97,12 @@ function Public.install(Expanse)
 
     local function board()
         local state, player = state_and_player()
+        local silos = state.rocket_silos
+        state.rocket_silos = {}
+        Board.open(player, state)
+        check('board_defaults_to_first_unfound_mission', player.gui.screen[Board.FRAME].tags.selected == TIER)
+        Board.close(player)
+        state.rocket_silos = silos
         Board.open(player, state)
         local frame = player.gui.screen[Board.FRAME]
         check('board_opens_as_the_players_window', frame and player.opened == frame)
@@ -136,9 +145,82 @@ function Public.install(Expanse)
         player.opened = nil
     end
 
+    local function reward_row(frame, name, quality)
+        local rows = find(frame, function(e) return e.type == 'table' end)
+        if not rows then return end
+        local cells = rows.children
+        for i = 5, #cells, 4 do
+            if cells[i].sprite == 'item/' .. name and cells[i].quality.name == quality then
+                return cells[i + 2].caption, cells[i + 3].caption
+            end
+        end
+    end
+
+    -- Both support modes can hold more of an item in overflow than in the hub.
+    local function reward_storage()
+        local state, player = state_and_player()
+        local overflow = game.create_inventory(1)
+        overflow.insert { name = 'iron-plate', count = 6 }
+        local platform = player.force.create_space_platform { name = 'Board probe', planet = 'nauvis', starter_pack = 'space-platform-starter-pack' }
+        platform.apply_starter_pack(true)
+        local frame = player.gui.screen.add { type = 'frame' }
+        for _, platform_mode in ipairs({ false, true }) do
+            local inventory = platform_mode and platform.hub.get_inventory(defines.inventory.hub_main)
+                or state.nonspace_pad.get_inventory(defines.inventory.cargo_landing_pad_main)
+            local normal_count = platform_mode and 3 or 4
+            inventory.insert { name = 'iron-plate', count = normal_count }
+            inventory.insert { name = 'iron-plate', quality = 'rare', count = 2 }
+            local view = { use_space_platform = platform_mode, space_platform = platform, nonspace_pad = state.nonspace_pad,
+                reward_overflow = { ['iron-plate|normal'] = overflow } }
+            local mode = platform_mode and 'platform' or 'surface'
+            Detail.receive(frame, view)
+            local rate, count = reward_row(frame, 'iron-plate', 'rare')
+            check('board_lists_stored_only_goods_before_production_' .. mode, rate == '—' and count == '2')
+            frame.clear()
+            view.space_production = { ['iron-plate|normal'] = 1, ['coal|normal'] = 2 }
+            Detail.receive(frame, view)
+            rate, count = reward_row(frame, 'iron-plate', 'normal')
+            check('board_counts_waiting_goods_' .. mode, rate == '+1' and count == tostring(normal_count + 6))
+            rate, count = reward_row(frame, 'iron-plate', 'rare')
+            check('board_lists_stored_only_quality_' .. mode, rate == '—' and count == '2')
+            rate, count = reward_row(frame, 'coal', 'normal')
+            check('board_lists_recurring_goods_with_no_stock_' .. mode, rate == '+2' and count == '0')
+            frame.clear()
+        end
+        frame.destroy()
+        platform.destroy()
+        overflow.destroy()
+    end
+
+    local function pad_tooltip()
+        local state, player = state_and_player()
+        local surface = game.surfaces[state.active_surface_index]
+        -- The tooltip is an entity field. Use separate disposable entities to
+        -- exercise replacing the target while the team's production is unchanged.
+        local function target(x)
+            return surface.create_entity { name = 'steel-chest', position = { x, 54 }, force = player.force }
+        end
+        local pad = target(54)
+        local view = { landing_pad = pad, space_production = {} }
+        for _, name in ipairs({ 'iron-plate', 'copper-plate', 'steel-plate', 'coal', 'stone', 'copper-ore', 'iron-ore', 'battery', 'uranium-ore' }) do
+            view.space_production[name .. '|normal'] = 2
+        end
+        Tooltips.pad(view)
+        view.space_production['wood|normal'] = 4
+        Tooltips.pad(view)
+        local field = pad.get_tooltip_field(1)
+        check('pad_tooltip_updates_hidden_item_count', field.value[2][3] == '2')
+        pad.destroy()
+        view.landing_pad = target(55)
+        Tooltips.pad(view)
+        check('new_pad_receives_unchanged_tooltip', view.landing_pad.get_tooltip_field(1) ~= nil)
+        view.landing_pad.destroy()
+    end
+
     local function open_silo()
         local _, player = state_and_player()
         check('escape_closes_the_board', player.gui.screen[Board.FRAME] == nil)
+        settings.global['mts-expanse-rocket-launch-weight-threshold'] = { value = 500000 }
         player.opened = storage.windows_test.silo
     end
 
@@ -149,6 +231,10 @@ function Public.install(Expanse)
         local frame = player.gui.relative[SiloPanel.FRAME]
         check('silo_panel_opens_with_the_silo', frame ~= nil)
         if not frame then return end
+        local rule = find(frame, function(e)
+            return e.type == 'label' and type(e.caption) == 'table' and e.caption[1] == 'expanse-missions.panel_rule'
+        end)
+        check('panel_reports_configured_launch_weight', rule and rule.caption[2] == '500 kg')
         local needed = frame.inner.needed
         local kinds = 0
         for _ in pairs(Data.costs[TIER][LEVEL]) do kinds = kinds + 1 end
@@ -176,6 +262,15 @@ function Public.install(Expanse)
             action = defines.inventory_actions.stack_transfer, button = defines.mouse_button_type.left, alt = false, control = false, shift = true })
         local chest = state.rocket_silos[test.silo.unit_number].cargo_chest
         check('shift_click_moves_the_stack_to_the_player', chest.get_item_count(name) == 0 and player.get_main_inventory().get_item_count(name) == before + 3)
+        chest.destroy()
+    end
+
+    local function replaced_chest()
+        local state, player = state_and_player()
+        local data = state.rocket_silos[storage.windows_test.silo.unit_number]
+        local slots = find(player.gui.relative[SiloPanel.FRAME], function(e) return e.type == 'inventory' end)
+        check('panel_rebinds_to_recreated_chest', slots.inventory == data.cargo_chest.get_inventory(defines.inventory.chest))
+        check('recreated_chest_gets_its_tooltip', data.cargo_chest.get_tooltip_field(1) ~= nil)
         player.opened = nil
     end
 
@@ -195,6 +290,66 @@ function Public.install(Expanse)
         check('keep_playing_closes_the_dialog', player.gui.screen[ForfeitDialog.FRAME] == nil)
     end
 
+    local function stash_button(player)
+        return find(player.gui.top, function(e) return e.type == 'sprite-button' and e.sprite == 'item/wooden-chest' end)
+    end
+
+    local function stash()
+        local state, player = state_and_player()
+        local surface = game.surfaces[state.active_surface_index]
+        player.teleport({ 65, 50 }, surface)
+        local target = surface.create_entity { name = 'steel-chest', position = { 66, 50 }, force = player.force }
+        local inventory = player.get_main_inventory()
+        inventory.clear()
+        inventory.insert { name = 'iron-plate', count = 35 }
+        inventory.insert { name = 'stone', count = 4 }
+        inventory.insert { name = 'power-armor' }
+        local armor = inventory.find_item_stack('power-armor')
+        armor.grid.put { name = 'battery-equipment' }
+        player.set_quick_bar_slot(1, 1, 'stone')
+        player.set_quick_bar_slot(10, player.quick_bar_width, armor)
+        local slot = player.get_quick_bar_slot(10, player.quick_bar_width)
+        assert(slot.type == 'item')
+        inventory.insert { name = 'power-armor' }
+        click(assert(stash_button(player)))
+        check('stash_keeps_quickbar_item', inventory.get_item_count('power-armor') == 1 and inventory.find_item_stack('power-armor').item == slot.item)
+        check('stash_moves_other_armor', target.get_item_count('power-armor') == 1)
+        check('stash_keeps_quickbar_filter', inventory.get_item_count('stone') == 4)
+        check('stash_moves_full_stack', target.get_item_count('iron-plate') == 35 and inventory.get_item_count('iron-plate') == 0)
+        target.destroy()
+    end
+
+    local function stash_furnaces()
+        local state, player = state_and_player()
+        local surface = game.surfaces[state.active_surface_index]
+        local inventory = player.get_main_inventory()
+        inventory.clear()
+        inventory.insert { name = 'coal', quality = 'rare', count = 3 }
+        inventory.insert { name = 'coal', count = 6 }
+        local furnace = surface.create_entity { name = 'stone-furnace', position = { 66, 50 }, force = player.force }
+        click(assert(stash_button(player)), defines.mouse_button_type.right, true)
+        for _, spec in ipairs({ { 'normal', 6 }, { 'rare', 3 } }) do
+            local item = { name = 'coal', quality = spec[1] }
+            check('stash_conserves_furnace_fuel_' .. spec[1], inventory.get_item_count(item) + furnace.get_item_count(item) == spec[2])
+        end
+        check('stash_supplies_furnace_fuel', not furnace.get_fuel_inventory().is_empty())
+        furnace.destroy()
+    end
+
+    local function legacy_counts()
+        local state = state_and_player()
+        local unit, container = next(state.containers)
+        Functions.set_container(state, container.entity, container.left_top, true)
+        container = state.containers[unit]
+        local price = container.price[1]
+        local renders = price.render
+        renders[4].destroy()
+        renders[4] = nil
+        for i = 1, 3 do renders[i].only_in_alt_mode = true end
+        Functions.set_container(state, container.entity, container.left_top, false)
+        check('legacy_count_aligns_with_its_icon', renders[4] and renders[4].target.offset.x == renders[2].target.offset.x and not renders[2].only_in_alt_mode)
+    end
+
     local function finish()
         local test = storage.windows_test
         local passed = true
@@ -209,11 +364,17 @@ function Public.install(Expanse)
     local steps = {
         [START] = setup,
         [START + 90] = board,
+        [START + 91] = reward_storage,
         [START + 92] = open_silo,
         [START + 94] = silo_panel,
+        [START + 100] = pad_tooltip,
         [START + 220] = silo_panel_updates,
-        [START + 222] = reset_dialog,
-        [START + 224] = finish,
+        [START + 300] = replaced_chest,
+        [START + 302] = reset_dialog,
+        [START + 325] = stash,
+        [START + 355] = stash_furnaces,
+        [START + 356] = legacy_counts,
+        [START + 357] = finish,
     }
     Event.add(defines.events.on_tick, function()
         local step = steps[game.tick]

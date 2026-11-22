@@ -48,9 +48,9 @@ end
 
 local function chest_line(data)
     local chest = data.cargo_chest
-    if data.chest_tip or not (chest and chest.valid) then return end
+    if not (chest and chest.valid) or data.chest_tip == chest.unit_number then return end
     set(chest, MISSION, 'expanse-missions.tip_chest_name', { 'expanse-missions.tip_chest', Ships.by_tier[data.tier].name })
-    data.chest_tip = true
+    data.chest_tip = chest.unit_number
 end
 
 -- Once a second per silo from the mission tick. The lines only depend on the
@@ -61,7 +61,7 @@ function Public.silo(state, data)
     local stage = Model.stage(state, data.tier)
     local outstanding = stage.status == 'active' and Model.outstanding(state, data.tier) or {}
     local needs, more = item_list(outstanding, '')
-    local key = stage.status .. stage.step .. needs
+    local key = table.concat({ silo.unit_number, stage.status, stage.step, needs, more, state.space_production_interval_ticks or 3600 }, '/')
     if data.tooltip_key == key then return end
     data.tooltip_key = key
     set(silo, MISSION, 'expanse-missions.tip_mission', mission_line(state, data, stage))
@@ -84,7 +84,7 @@ function Public.pad(state)
     local pad = state.landing_pad
     if not (pad and pad.valid) then return end
     local goods, more = item_list(state.space_production or {}, '+')
-    local key = goods .. (state.space_production_interval_ticks or '')
+    local key = table.concat({ pad.unit_number, goods, more, state.space_production_interval_ticks or 3600 }, '/')
     if state.pad_tooltip_key == key then return end
     state.pad_tooltip_key = key
     if goods == '' then

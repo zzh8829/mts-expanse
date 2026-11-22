@@ -98,18 +98,22 @@ local function announce_silo(expanse, tier, silo)
     MissionPins.team(expanse, expanse.rocket_silos[silo.unit_number])
 end
 
+function Public.reward_storage(expanse)
+    local sources = {}
+    local inventory = mission_hub_inventory(expanse, mission_hub(expanse))
+    if inventory then sources[#sources + 1] = inventory end
+    for _, buffer in pairs(expanse.reward_overflow or {}) do
+        if buffer.valid then sources[#sources + 1] = buffer end
+    end
+    return sources
+end
+
 -- True when earned rewards wait at their source because the landing pad has no
 -- room for them.
 function Public.rewards_blocked(expanse)
     local hub, pad = mission_hub(expanse), expanse.landing_pad
     if not (hub and hub.valid and pad and pad.valid) then return false end
-    local sources = {}
-    local inventory = mission_hub_inventory(expanse, hub)
-    if inventory then sources[#sources + 1] = inventory end
-    for _, buffer in pairs(expanse.reward_overflow or {}) do
-        if buffer.valid then sources[#sources + 1] = buffer end
-    end
-    return CargoDelivery.blocked_by_space(sources, pad)
+    return CargoDelivery.blocked_by_space(Public.reward_storage(expanse), pad)
 end
 
 local function create_probe_cargo_pod(expanse, launcher)
