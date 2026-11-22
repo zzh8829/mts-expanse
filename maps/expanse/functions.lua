@@ -8,10 +8,12 @@ local ExpanseEvents = require 'maps.expanse.events'
 local format_number = require 'util'.format_number
 local ChestTooltip = require 'maps.expanse.chest_tooltip'
 local RequestSection = require 'maps.expanse.request_section'
+local Richness = require 'maps.expanse.richness'
 local Public = {}
 
 -- main.lua is at Lua's 200-local limit, so it reaches this through Functions.
 Public.teleport_body = require 'utils.body_teleport'.to
+Public.richness = Richness
 
 local ores = { 'copper-ore', 'iron-ore', 'stone', 'coal' }
 local price_modifiers = {
@@ -1215,7 +1217,7 @@ function Public.expand(expanse, left_top)
     local source_positions = source_spawner_positions(expanse, source_surface, area, left_top, meta_cell)
     destroy_natural_enemy_entities(source_surface, area)
 
-    source_surface.clone_area(
+    local cloned_resources = Richness.clone_area(source_surface,
         {
             source_area = area,
             destination_area = area,
@@ -1253,7 +1255,8 @@ function Public.expand(expanse, left_top)
     end
 
     SpaceMissions.convert_tiles(surface, left_top, custom_tier, square_size)
-    SpaceMissions.convert_entities(surface, left_top, custom_tier, square_size)
+    local native_source = Richness.native_source(expanse, source_surface)
+    SpaceMissions.convert_entities(surface, left_top, custom_tier, square_size, cloned_resources, native_source)
     SpaceMissions.convert_decoratives(surface, left_top, custom_tier, square_size)
     SpaceMissions.place_special_tiered_object(expanse, tier, surface, left_top, custom_tier)
     ensure_cell_fish(expanse, surface, left_top, area, meta_cell)
@@ -1265,7 +1268,7 @@ function Public.expand(expanse, left_top)
                 surface.set_tiles({ { name = 'water', position = { a + x + 2, a + y + 2 } } }, true)
             end
         end
-        surface.create_entity({ name = 'crude-oil', position = { a - 4, a - 4 }, amount = 1500000 })
+        Richness.create(surface, 'crude-oil', { a - 4, a - 4 }, 1500000)
         Task.set_timeout_in_ticks(30, delay_infini_tree_token, { surface = surface, position = { a - 4, a + 4 }, expanse = expanse })
         surface.create_entity({ name = 'big-rock', position = { a + 4, a - 4 } })
         surface.spill_item_stack({ position = { a, a + 2 }, stack = { name = 'coin', count = 1 }, enable_looted = false, allow_belts = false })
@@ -1275,7 +1278,7 @@ function Public.expand(expanse, left_top)
         for x = 0, square_size, 1 do
             for y = 0, square_size, 1 do
                 if surface.can_place_entity({ name = 'wooden-chest', position = { x, y } }) and surface.can_place_entity({ name = 'coal', position = { x, y }, amount = 1 }) then
-                    surface.create_entity({ name = ores[(x + y) % 4 + 1], position = { x, y }, amount = 1500 })
+                    Richness.create(surface, ores[(x + y) % 4 + 1], { x, y }, 1500)
                 end
             end
         end

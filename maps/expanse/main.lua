@@ -867,6 +867,7 @@ local function set_source_surface(state)
         surface = game.create_surface(source_name, map_gen_settings)
         created = true
     end
+    if not state.override_nauvis then return surface end
     local map_gen_settings = surface.map_gen_settings
     map_gen_settings.autoplace_controls = {
         ['coal'] = { frequency = 6, size = 0.7, richness = 0.5 },
@@ -883,6 +884,7 @@ local function set_source_surface(state)
     map_gen_settings.starting_area = state.map_starting_area
     map_gen_settings.default_enable_all_autoplace_controls = false
     surface.map_gen_settings = map_gen_settings
+    expanse.meta_map.scripted_ore_chunks = nil
     expanse.meta_map.source_surface = source_name
     expanse.meta_map.shared_seed = expanse.shared_seed
     expanse.meta_map.biome_offset = expanse.shared_biome_offset
@@ -1188,7 +1190,12 @@ local function on_resource_depleted(event)
         bonus = math.random(1, 3)
     end
     if roll == 1 then
-        ore.surface.create_entity({ name = 'uranium-ore', position = ore.position, amount = 200 + math.floor(distance) * bonus })
+        local amount = 200 + math.floor(distance) * bonus
+        if state and state.active_surface_index == ore.surface.index then
+            Functions.richness.create(ore.surface, 'uranium-ore', ore.position, amount)
+        else
+            ore.surface.create_entity({ name = 'uranium-ore', position = ore.position, amount = amount })
+        end
     end
 end
 
@@ -1207,13 +1214,16 @@ local function on_chunk_generated(event)
     local state = state_from_surface(surface)
 
     if not state or surface.index ~= state.active_surface_index then
-        if state and state.override_nauvis and surface.name == state.source_surface then
-                for _, e in pairs(surface.find_entities_filtered({ area = event.area, name = { 'iron-ore', 'copper-ore', 'coal', 'stone', 'uranium-ore' } })) do
+        if state and surface.name == state.source_surface then
+            Functions.richness.record_source_chunk(state, surface, event.area.left_top)
+            if state.override_nauvis then
+                for _, e in pairs(surface.find_entities_filtered({ area = event.area, name = Functions.richness.source_ores })) do
                     surface.create_entity({ name = e.name, position = e.position, amount = 500 + math.sqrt(e.position.x ^ 2 + e.position.y ^ 2) * 3 })
                     e.destroy()
                 end
                 generate_ore(surface, event.area.left_top, state)
                 destroy_natural_enemy_entities(surface, event.area)
+            end
         end
         return
     end

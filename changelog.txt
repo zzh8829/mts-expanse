@@ -2,6 +2,8 @@
 Version: 0.1.26
 Date: 21. 11. 2026
   Bugfixes:
+    - Starter deposits, newly unlocked cells and tier rewards use the map's resource richness
+      sliders, including the Space Age biome sliders. Vulcanus tungsten patch rolls now place ore.
     - Mission cargo stations and hungry chests keep their own request section. Wiring a chest for
       circuit requests no longer raises a Lua error. Other chests in a named group keep their filters.
     - Hephaestus step 7 accepts efficiency module 2s when Quality is disabled. Opening the mission

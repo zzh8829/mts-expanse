@@ -18,6 +18,11 @@ Run the MTS compatibility probe against the latest official installed
 scripts/test-mts.sh
 ```
 
+Run `python3 scripts/test-richness.py` to check resource amounts with the
+Default and Rich resources presets, mixed per-resource settings, two MTS teams,
+and an upgrade from 0.1.25. Set `FACTORIO` and `MTS_MOD_ZIP` to use a specific
+game binary and Multi-Team Support package.
+
 Run the focused forfeit cleanup regressions (all biter/spitter/worm tiers,
 pentapods and their legs, demolishers and their segments, nests, attacks in
 flight, hungry chest inventories, real character crafting queues, refund
