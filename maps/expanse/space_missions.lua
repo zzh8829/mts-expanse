@@ -98,18 +98,32 @@ local function announce_silo(expanse, tier, silo)
     MissionPins.team(expanse, expanse.rocket_silos[silo.unit_number])
 end
 
--- True when earned rewards wait at their source because the landing pad has no
--- room for them.
-function Public.rewards_blocked(expanse)
+-- Where earned rewards wait for a pod: the hub and the per-item overflow
+-- stores. nil while the team has no hub or no landing pad.
+local function reward_sources(expanse)
     local hub, pad = mission_hub(expanse), expanse.landing_pad
-    if not (hub and hub.valid and pad and pad.valid) then return false end
+    if not (hub and hub.valid and pad and pad.valid) then return nil end
     local sources = {}
     local inventory = mission_hub_inventory(expanse, hub)
     if inventory then sources[#sources + 1] = inventory end
     for _, buffer in pairs(expanse.reward_overflow or {}) do
         if buffer.valid then sources[#sources + 1] = buffer end
     end
-    return CargoDelivery.blocked_by_space(sources, pad)
+    return sources
+end
+
+-- True when earned rewards wait at their source because the landing pad has no
+-- room for them.
+function Public.rewards_blocked(expanse)
+    local sources, pad = reward_sources(expanse), expanse.landing_pad
+    return sources ~= nil and CargoDelivery.blocked_by_space(sources, pad)
+end
+
+-- Earned rewards that are not sent because the landing pad has requests set
+-- and leaves them out, as "name|quality" -> count waiting.
+function Public.rewards_unrequested(expanse)
+    local sources, pad = reward_sources(expanse), expanse.landing_pad
+    return sources and CargoDelivery.unrequested(sources, pad, expanse.pending_space_rewards) or {}
 end
 
 local function create_probe_cargo_pod(expanse, launcher)

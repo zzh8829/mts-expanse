@@ -8,6 +8,7 @@
 local Model = require 'maps.expanse.missions.model'
 local Ships = require 'maps.expanse.missions.ships'
 local SpaceMissions = require 'maps.expanse.space_missions'
+local HeldRewards = require 'maps.expanse.missions.held_rewards'
 
 local Public = {}
 
@@ -81,6 +82,7 @@ function Public.tick(state)
     if pad and pad.valid and SpaceMissions.rewards_blocked(state) then
         force.add_custom_alert(pad, icon('cargo-landing-pad'), { 'expanse-missions.alert_pad_full' }, true)
     end
+    HeldRewards.tick(state, force)
     local networks
     for _, data in pairs(state.rocket_silos or {}) do
         if data.entity and data.entity.valid then

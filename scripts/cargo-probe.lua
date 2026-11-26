@@ -132,6 +132,10 @@ function Public.install(Expanse, mts, platform)
         for i=1,20 do src[i].set_stack{name='iron-plate',count=100} end
         src[30].set_stack{name='space-science-pack',count=10};send()
         check('unrequested_front_stacks_do_not_block_later_requests',incoming('space-science-pack')==7 and incoming('iron-plate')==0)
+        local held=Cargo.unrequested({src},pad,{['coal|normal']=5})
+        check('held_rewards_are_the_ones_the_pad_does_not_request',held['iron-plate|normal']==2000 and held['coal|normal']==5 and held['space-science-pack|normal']==nil)
+        clear();src.insert{name='iron-plate',count=100}
+        check('pad_without_requests_holds_nothing_back',next(Cargo.unrequested({src},pad,{['coal|normal']=5}))==nil)
         clear();src.insert{name='iron-plate',count=100}
         pad.get_or_create_control_behavior().set_requests=true
         send();check('empty_circuit_requests_pause',#pods==0)

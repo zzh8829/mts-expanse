@@ -49,6 +49,11 @@ function Public.pad_found(state, pad)
     say(state, { 'expanse-missions.chat_pad_found', gps(pad) })
 end
 
+-- names is the list of held rewards in words.
+function Public.rewards_held(state, pad, names)
+    say(state, { 'expanse-missions.chat_rewards_held', names, gps(pad) })
+end
+
 -- Called after a step's rewards are paid and the mission moved on.
 function Public.step_done(state, tier, finished_step, rewards)
     local ship = Ships.by_tier[tier]

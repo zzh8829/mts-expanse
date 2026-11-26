@@ -57,6 +57,26 @@ function Public.blocked_by_space(sources, pad)
     return false
 end
 
+-- Rewards the pad's requests leave out, as "name|quality" -> count waiting.
+-- owed are counts not in any source inventory yet. Empty when the pad has no
+-- requests set: such a pad takes everything.
+function Public.unrequested(sources, pad, owed)
+    local held = {}
+    local point = pad.get_logistic_point(defines.logistic_member_index.cargo_landing_pad_requester)
+    local limits = point and request_limits(pad, point)
+    if not limits then return held end
+    for _, inventory in ipairs(sources) do
+        for _, item in pairs(inventory.get_contents()) do
+            local id = key(item.name, item.quality)
+            if (limits[id] or 0) == 0 then held[id] = (held[id] or 0) + item.count end
+        end
+    end
+    for id, count in pairs(owed or {}) do
+        if (limits[id] or 0) == 0 then held[id] = (held[id] or 0) + count end
+    end
+    return held
+end
+
 function Public.send(source, launcher, pad, extra_sources, cursor)
     cursor = cursor or 0
     local destination = pad.get_inventory(defines.inventory.cargo_landing_pad_main)

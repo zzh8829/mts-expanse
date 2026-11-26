@@ -1,4 +1,12 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.27
+Date: 26. 11. 2026
+  Features:
+    - A landing pad that has requests set only receives the rewards it asks for. The team is now
+      told when an earned reward waits for that reason: red text over the pad names the rewards,
+      an alert stays in the alert bar, the pad's tooltip lists them, and a chat line appears each
+      time another reward joins. Add a request for the reward on the pad and it starts arriving.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.26
 Date: 26. 11. 2026
   Bugfixes:
